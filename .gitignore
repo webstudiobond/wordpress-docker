@@ -1,0 +1,16 @@
+.bash_logout
+.bashrc
+.local/
+.profile
+
+*.md
+!README.md
+!.github/**/*.md
+
+secrets/
+.env
+wordpress.env
+
+data/
+mariadb/
+tpm/

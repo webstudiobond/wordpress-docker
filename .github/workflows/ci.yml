@@ -1,0 +1,74 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Lint & Validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Lint Dockerfile with hadolint
+        uses: hadolint/hadolint-action@06be81baf89a55ffd0e24b8f04a4185738dd3387 # v3.5.0
+        with:
+          dockerfile: Dockerfile
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # v2.37.2
+        with:
+          php-version: '8.5'
+          coverage: none
+          tools: phpstan, phpcs
+
+      - name: Lint PHP syntax
+        run: |
+          find . -type f \( -name "*.php" -o -name "*.php.example" \) -print0 | xargs -0 -n1 php -l
+
+      - name: Check coding standards with PHP_CodeSniffer
+        run: phpcs
+
+      - name: Analyze code with PHPStan (Level 9)
+        run: phpstan analyse --debug --no-progress
+
+      - name: Test wp-sync.php execution
+        run: php build/wp-sync.php
+
+      - name: Prepare mock environment for Compose validation
+        run: |
+          cp examples/.env.example .env
+          mkdir -p secrets
+          for s in db_name db_user db_password db_root_password table_prefix \
+                   auth_key secure_auth_key logged_in_key nonce_key \
+                   auth_salt secure_auth_salt logged_in_salt nonce_salt; do
+            touch "secrets/${s}.txt"
+          done
+
+      - name: Validate docker-compose.yaml
+        run: docker compose -f docker-compose.yaml config --quiet
+
+      - name: Validate docker-compose.dev.yaml
+        run: docker compose -f docker-compose.dev.yaml config --quiet
+
+  trivy:
+    name: Trivy Scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Run Trivy filesystem scan
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          exit-code: '1'
+          severity: 'CRITICAL,HIGH'

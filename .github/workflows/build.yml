@@ -1,0 +1,141 @@
+name: Build and Publish Docker Image
+
+on:
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    name: Prepare Metadata
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      wp_ver:     ${{ steps.extract.outputs.wp_ver }}
+      wpcli_ver:  ${{ steps.extract.outputs.wpcli_ver }}
+      image_base: ${{ steps.extract.outputs.image_base }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Extract versions from Dockerfile
+        id: extract
+        run: |
+          WP_VER=$(sed -nE 's/^FROM wordpress:([0-9]+(\.[0-9]+)+).* AS wordpress-donor.*/\1/p' Dockerfile)
+          WPCLI_VER=$(sed -nE 's/^FROM wordpress:cli-([0-9]+(\.[0-9]+)+).* AS wpcli-donor.*/\1/p' Dockerfile)
+          IMAGE_BASE=$(echo "${REGISTRY}/${IMAGE_NAME}" | tr '[:upper:]' '[:lower:]')
+
+          [ -n "${WP_VER}" ]    || { echo "ERROR: failed to parse WordPress version"; exit 1; }
+          [ -n "${WPCLI_VER}" ] || { echo "ERROR: failed to parse WP-CLI version"; exit 1; }
+
+          echo "wp_ver=${WP_VER}"         >> "$GITHUB_OUTPUT"
+          echo "wpcli_ver=${WPCLI_VER}"   >> "$GITHUB_OUTPUT"
+          echo "image_base=${IMAGE_BASE}" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build (${{ matrix.platform }})
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            push_tag_suffix: -amd64
+          - platform: linux/arm64
+            push_tag_suffix: -arm64
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+
+      - uses: docker/setup-buildx-action@594f3bf4285d9ea8dc53c9a0c9c4092420091003 # v4.4.0
+
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push FPM platform image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          target: fpm
+          push: true
+          platforms: ${{ matrix.platform }}
+          tags: |
+            ${{ needs.prepare.outputs.image_base }}:${{ needs.prepare.outputs.wp_ver }}${{ matrix.push_tag_suffix }}
+          provenance: false
+          labels: |
+            org.opencontainers.image.title=WordPress FPM
+            org.opencontainers.image.description=Hardened decoupled WordPress PHP-FPM runtime
+            org.opencontainers.image.version=${{ needs.prepare.outputs.wp_ver }}
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.licenses=MIT
+
+      - name: Build and push CLI platform image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          target: cli
+          push: true
+          platforms: ${{ matrix.platform }}
+          tags: |
+            ${{ needs.prepare.outputs.image_base }}:cli-${{ needs.prepare.outputs.wpcli_ver }}${{ matrix.push_tag_suffix }}
+          provenance: false
+          labels: |
+            org.opencontainers.image.title=WordPress CLI
+            org.opencontainers.image.description=Decoupled WP-CLI tool for hardened WordPress runtime
+            org.opencontainers.image.version=${{ needs.prepare.outputs.wpcli_ver }}
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.licenses=MIT
+
+  merge:
+    name: Merge fat manifests
+    needs: [prepare, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create FPM multi-arch manifest
+        run: |
+          BASE=${{ needs.prepare.outputs.image_base }}
+          VER=${{ needs.prepare.outputs.wp_ver }}
+
+          docker buildx imagetools create \
+            --tag "${BASE}:${VER}" \
+            --tag "${BASE}:latest" \
+            "${BASE}:${VER}-amd64" \
+            "${BASE}:${VER}-arm64"
+
+      - name: Create CLI multi-arch manifest
+        run: |
+          BASE=${{ needs.prepare.outputs.image_base }}
+          CLI_VER=${{ needs.prepare.outputs.wpcli_ver }}
+
+          docker buildx imagetools create \
+            --tag "${BASE}:cli-${CLI_VER}" \
+            --tag "${BASE}:cli-latest" \
+            --tag "${BASE}:cli" \
+            "${BASE}:cli-${CLI_VER}-amd64" \
+            "${BASE}:cli-${CLI_VER}-arm64"
