@@ -312,6 +312,9 @@ If your site or plugins rely on `HTTP_HOST` for dynamic URLs, configure the URL 
 
 ---
 
+<details>
+<summary><strong>DB Bridge</strong></summary>
+
 ## Remote Database Access (DB Bridge)
 
 MariaDB runs with TCP networking completely disabled (`skip-networking`) and communicates exclusively via a UNIX socket. The `db-bridge` service is an on-demand socat relay that exposes the socket as a local TCP port for use with desktop database clients.
@@ -336,7 +339,12 @@ Connect your database client (DataGrip, DBeaver, TablePlus, VS Code Database Cli
 > docker compose -f /home/${SITE_USER}/docker-compose.yaml --profile tools stop db-bridge
 > ```
 
+</details>
+
 ---
+
+<details>
+<summary><strong>External Angie</strong></summary>
 
 ## Edge Reverse Proxy (External Angie)
 
@@ -397,7 +405,12 @@ server {
 
 The `proxy_pass` target `mysite_angie` corresponds to the `container_name` of the internal Angie service (formatted as `${SITE_USER}_angie`).
 
+</details>
+
 ---
+
+<details>
+<summary><strong>Development</strong></summary>
 
 ## Local Development & Image Building
 
@@ -435,3 +448,5 @@ All checks must pass with zero errors:
 - **PHP_CodeSniffer** enforces **strict PSR-12** with zero rule exclusions — see [phpcs.xml](phpcs.xml)
 
 For pull requests, CI additionally runs **Hadolint** (Dockerfile linting), **Docker Compose** config validation, and **Trivy** filesystem vulnerability scanning — see [ci.yml](.github/workflows/ci.yml).
+
+</details>
