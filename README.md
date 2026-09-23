@@ -246,7 +246,7 @@ nano ~/.bashrc
 ```
 
 ```bash
-function wp_mysite() {
+wp_mysite() {
     docker compose -f /home/mysite/docker-compose.yaml run --rm wp-cli "$@"
 }
 ```
