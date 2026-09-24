@@ -1,0 +1,19 @@
+add_header X-Download-Options "noopen";
+add_header X-Frame-Options "SAMEORIGIN";
+add_header Strict-Transport-Security "max-age=2592000; preload";
+add_header X-XSS-Protection "1; mode=block";
+add_header Permissions-Policy "accelerometer=(), gamepad=(), gyroscope=()";
+add_header Cross-Origin-Resource-Policy "cross-origin";
+add_header Cross-Origin-Opener-Policy "unsafe-none";
+add_header Cross-Origin-Embedder-Policy "unsafe-none";
+add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+add_header X-Content-Type-Options "nosniff";
+add_header X-Permitted-Cross-Domain-Policies "none";
+
+# Research and rationale on CSP adoption:
+# https://cdua.org/research/csp-adoption-among-ukrainian-sme-websites-12-percent-in-march-2025/
+#
+# WARNING: Always test CSP in Report-Only mode first to ensure it does not break external resources.
+# Once verified with your site's theme and plugins, switch from Content-Security-Policy-Report-Only
+# to enforcing Content-Security-Policy.
+add_header Content-Security-Policy-Report-Only "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'self'; upgrade-insecure-requests;";

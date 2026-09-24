@@ -13,4 +13,6 @@ wordpress.env
 
 data/
 mariadb/
-tpm/
+mariadb-backup/
+tmp/
+.wp-cli/

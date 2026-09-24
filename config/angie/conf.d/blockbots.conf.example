@@ -1,0 +1,5 @@
+if ($http_user_agent ~* "AhrefsBot"){return 403;}
+if ($http_user_agent ~* "SemrushBot"){return 403;}
+if ($http_user_agent ~* "dotbot"){return 403;}
+if ($http_user_agent ~* "barkrowler"){return 403;}
+if ($http_user_agent ~* "serpstatbot"){return 403;}

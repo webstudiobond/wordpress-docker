@@ -1,0 +1,9 @@
+# Wordfence Web Application Firewall (.user.ini protection)
+# Included inside the server block
+#
+# Prevents public access to the Wordfence bootstrap configuration file.
+
+location ~ ^/\.user\.ini {
+    deny all;
+    return 404;
+}

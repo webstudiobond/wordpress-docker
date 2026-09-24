@@ -1,0 +1,62 @@
+# Custom HTTP-level mapping examples for site-specific routing, rate-limit whitelisting,
+# and high-performance SEO redirects.
+#
+# Directives inside this file run in the http context (loaded via include /etc/angie/conf.d/nginx-map[.]conf).
+#
+# NOTE: AVIF and WebP content negotiation maps ($webp_suffix, $avif_suffix) and FastCGI
+# cache bypass maps ($no_cache) are already built natively into the core angie.conf.
+# Do NOT redeclare $webp_suffix, $avif_suffix, or $no_cache here to avoid duplicate variable errors.
+
+
+# -----------------------------------------------------------------------------
+# 1. High-Performance SEO 301 Redirect Map
+# -----------------------------------------------------------------------------
+# Using 'map' for dozens or hundreds of page redirects is O(1) in memory,
+# vastly outperforming dozens of regex 'rewrite' rules inside location blocks.
+#
+# Usage in server block:
+#     if ($seo_redirect_uri) {
+#         return 301 $seo_redirect_uri;
+#     }
+#
+map $request_uri $seo_redirect_uri {
+    default                 "";
+    /old-about-us           /about-us/;
+    /old-contact-page       /contact/;
+    /legacy-service.html    /services/main/;
+}
+
+
+# -----------------------------------------------------------------------------
+# 2. Rate-Limiting Whitelist Map
+# -----------------------------------------------------------------------------
+# Exclude office IPs, monitoring agents, or staging tools from rate-limiting zones.
+# If the mapped value evaluates to an empty string (""), Angie completely bypasses
+# accounting for that connection in limit_req_zone and limit_conn_zone.
+#
+# Usage in limit_zones.conf:
+#     limit_req_zone $rate_limit_key zone=limit_50r_mysite:10m rate=50r/s;
+#
+map $remote_addr $rate_limit_key {
+    default                 $binary_remote_addr;
+    127.0.0.1               ""; # Local container loopback
+    192.168.1.100           ""; # Office / internal subnet
+    # 203.0.113.50          ""; # Dedicated monitoring service IP
+}
+
+
+# -----------------------------------------------------------------------------
+# 3. Dynamic CORS Origin Whitelisting
+# -----------------------------------------------------------------------------
+# Securely restrict Access-Control-Allow-Origin to trusted subdomains or mobile web apps
+# without resorting to insecure wildcard origins ("*") on authenticated endpoints.
+#
+# Usage in server or location block:
+#     add_header Access-Control-Allow-Origin $cors_allow_origin always;
+#
+map $http_origin $cors_allow_origin {
+    default                         "";
+    "~^https://(?:www\.)?example\.com$"      $http_origin;
+    "~^https://api\.example\.com$"           $http_origin;
+    "~^https://app\.example\.com$"           $http_origin;
+}

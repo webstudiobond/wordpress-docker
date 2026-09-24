@@ -1,0 +1,29 @@
+# Specialized CSP and Security Headers for Dynamic/Authenticated PHP Output
+# Included inside location ~ [^/]\.php(/|$)
+#
+# Applied specifically when requests bypass static HTML cache (e.g., WordPress admin,
+# logged-in user sessions, WooCommerce checkout, dynamic REST API calls).
+#
+# Research and rationale on CSP adoption:
+# https://cdua.org/research/csp-adoption-among-ukrainian-sme-websites-12-percent-in-march-2025/
+#
+# WARNING: DO NOT blindly switch to enforcing mode! Always thoroughly test your policy in
+# Report-Only mode first (Content-Security-Policy-Report-Only). Inspect browser developer tools
+# (Console / Network) across both the front-end and WP admin for any legitimate assets blocked
+# by external plugins, page builders (Elementor/Divi), CDNs, or payment gateways. Once verified,
+# you can switch the header name from Content-Security-Policy-Report-Only to Content-Security-Policy.
+
+# Baseline security headers for PHP responses
+add_header X-Download-Options "noopen";
+add_header X-Frame-Options "SAMEORIGIN";
+add_header X-XSS-Protection "1; mode=block";
+add_header Permissions-Policy "accelerometer=(), gamepad=(), gyroscope=()";
+add_header Cross-Origin-Resource-Policy "cross-origin";
+add_header Cross-Origin-Opener-Policy "unsafe-none";
+add_header Cross-Origin-Embedder-Policy "unsafe-none";
+add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+add_header X-Content-Type-Options "nosniff";
+add_header X-Permitted-Cross-Domain-Policies "none";
+
+# Content Security Policy (Report-Only testing mode)
+add_header Content-Security-Policy-Report-Only "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'self'; upgrade-insecure-requests;";

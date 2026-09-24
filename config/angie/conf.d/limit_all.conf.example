@@ -1,0 +1,13 @@
+# Rate Limiting & Connection Limiting Enforcement
+# Included inside location /
+#
+# IMPORTANT: Ensure zone names match those defined in limit_zones.conf.
+# Replace 'mysite' with your unique site name.
+#
+# For documentation and best practices, see:
+# - Angie limit_conn: https://en.angie.software/angie/docs/configuration/modules/http/http_limit_conn/
+# - Angie limit_req:  https://en.angie.software/angie/docs/configuration/modules/http/http_limit_req/
+# - Nginx: https://docs.nginx.com/nginx/admin-guide/security-controls/controlling-access-proxied-http/
+
+limit_req zone=limit_50r_mysite burst=200 delay=180;
+limit_conn addr_mysite 100;

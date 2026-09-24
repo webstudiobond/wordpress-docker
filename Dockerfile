@@ -83,7 +83,7 @@ FROM base AS cli
 HEALTHCHECK NONE
 
 # hadolint ignore=DL3008
-RUN apt-get update && apt-get install -y --no-install-recommends mariadb-client && apt-get clean && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends git mariadb-client && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 COPY --from=wpcli-donor --chmod=0755 /usr/local/bin/wp /usr/local/bin/wp
 

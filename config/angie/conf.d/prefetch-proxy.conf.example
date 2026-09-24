@@ -1,0 +1,11 @@
+location /.well-known/traffic-advice {
+    default_type application/trafficadvice+json;
+    add_header Access-Control-Allow-Origin *;
+    return 200 '[{
+      "user_agent": "prefetch-proxy",
+      "disallow": true
+    }]
+    ';
+
+    access_log off;
+}

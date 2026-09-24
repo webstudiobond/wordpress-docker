@@ -1,5 +1,11 @@
 # Hardened Containerized WordPress
 
+[![CI](https://github.com/webstudiobond/wordpress-docker/actions/workflows/ci.yml/badge.svg)](https://github.com/webstudiobond/wordpress-docker/actions/workflows/ci.yml)
+[![GitHub last commit](https://img.shields.io/github/last-commit/underhax/mihomo-warp-proxy)](https://github.com/webstudiobond/wordpress-docker/commits/main)
+[![GitHub issues](https://img.shields.io/github/issues/underhax/mihomo-warp-proxy)](https://github.com/webstudiobond/wordpress-docker/issues)
+[![GitHub repo size](https://img.shields.io/github/repo-size/underhax/mihomo-warp-proxy)](https://github.com/webstudiobond/wordpress-docker)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
 Production-ready, fully decoupled, and resource-efficient containerized WordPress deployment architecture for multi-tenant hosts. Built on the latest-generation [PHP-FPM](https://packages.sury.org/php/) with all extensions required by WordPress (MySQLi, PDO, cURL, mbstring, XML, GD, Intl, Zip, BCMath, Exif) plus additional modules (Redis, igbinary, zstd, ImageMagick, APCu, GMP, OPcache) and media codecs (WebP, AVIF) pre-installed in the image, latest LTS [MariaDB](https://mariadb.org/), [Angie](https://en.angie.software/) reverse proxy, and [Valkey](https://valkey.io/) in-memory cache.
 
 ## Architecture Highlights
@@ -45,10 +51,12 @@ Production-ready, fully decoupled, and resource-efficient containerized WordPres
 │   │   └── valkey.conf              # Memory limit, eviction policy, UNIX socket
 │   └── angie/                       # Angie reverse proxy configuration
 │       ├── angie.conf               # Main server config with FastCGI routing
+│       ├── modules.conf             # Dynamic modules activation (Brotli, Zstd, etc.)
 │       └── conf.d/                  # Custom site snippets (blockbots, cache rules, etc.)
 ├── mariadb/                         # Persistent MariaDB data volume
 ├── mariadb-backup/                  # Database backups directory
 ├── tmp/                             # Upload buffering directory (avoids RAM exhaustion)
+├── .wp-cli/                         # WP-CLI packages and Composer cache directory
 └── data/                            # WordPress document root
     ├── wp-config.php                # Site configuration (from examples/wp-config.php.example)
     └── ...                          # WordPress core files (auto-populated by init service)
@@ -64,10 +72,10 @@ Production-ready, fully decoupled, and resource-efficient containerized WordPres
 ### Prerequisites
 
 * **Docker Engine & Compose:** Ensure Docker Engine and Docker Compose plugin are installed on the host. Follow the official installation guide for [Ubuntu](https://docs.docker.com/engine/install/ubuntu/#install-using-the-repository).
-* **External Gateway Network:** The stack requires a Docker network named `frontend_gateway` (declared as `external: true`) to communicate with the host's Edge reverse proxy. If this network is not already managed by your Edge Angie stack, create it manually:
+* **External Gateway Network:** The stack communicates with the host's Edge reverse proxy over a shared Docker network named `frontend_gateway` (declared as `external: true`). This network is automatically provisioned and managed with a dedicated subnet (`172.20.0.0/16`) by the **[angie-docker-compose](https://github.com/webstudiobond/angie-docker-compose)** stack. If deploying standalone without `angie-docker-compose`, create the network manually:
 
 ```bash
-docker network create frontend_gateway
+docker network create --subnet=172.20.0.0/16 frontend_gateway
 ```
 
 ### 1. Create a Dedicated System User
@@ -82,7 +90,7 @@ sudo useradd -m -d /home/${SITE_USER} -s /usr/sbin/nologin ${SITE_USER}
 ### 2. Create Directory Structure
 
 ```bash
-sudo -u ${SITE_USER} mkdir -p /home/${SITE_USER}/{data/wp-content/uploads,mariadb,mariadb-backup,tmp,secrets,config/{angie/conf.d,mysql,php,valkey}}
+sudo -u ${SITE_USER} mkdir -p /home/${SITE_USER}/{.wp-cli,data/wp-content/uploads,mariadb,mariadb-backup,tmp,secrets,config/{angie/conf.d,mysql,php,valkey}}
 sudo chmod 0700 /home/${SITE_USER}/secrets
 ```
 
@@ -91,7 +99,7 @@ sudo chmod 0700 /home/${SITE_USER}/secrets
 Install the required tools:
 
 ```bash
-sudo apt update && sudo apt install -y pwgen openssl cron zstd
+sudo apt update && sudo apt install -y pwgen openssl
 ```
 
 All secrets are **strictly required** — the stack will refuse to start without them.
@@ -132,6 +140,7 @@ sudo -u ${SITE_USER} curl -fsSL ${REPO}/config/php/www.conf -o /home/${SITE_USER
 sudo -u ${SITE_USER} curl -fsSL ${REPO}/config/mysql/my.cnf -o /home/${SITE_USER}/config/mysql/my.cnf
 sudo -u ${SITE_USER} curl -fsSL ${REPO}/config/valkey/valkey.conf -o /home/${SITE_USER}/config/valkey/valkey.conf
 sudo -u ${SITE_USER} curl -fsSL ${REPO}/config/angie/angie.conf -o /home/${SITE_USER}/config/angie/angie.conf
+sudo -u ${SITE_USER} curl -fsSL ${REPO}/config/angie/modules.conf -o /home/${SITE_USER}/config/angie/modules.conf
 ```
 
 ### 5. Download Compose Manifest and Application Config
@@ -161,22 +170,7 @@ sudo -u ${SITE_USER} nano /home/${SITE_USER}/wordpress.env
 
 See [examples/wordpress.env.example](examples/wordpress.env.example) for all available overrides and the [official wp-config.php documentation](https://developer.wordpress.org/advanced-administration/wordpress/wp-config/) for detailed parameter descriptions.
 
-### 7. Server Cron (Recommended)
-
-Disable the virtual web cron by setting `WORDPRESS_DISABLE_CRON=true` in `wordpress.env`, then configure a real system cron for the site user:
-
-```bash
-sudo crontab -u ${SITE_USER} -e
-```
-
-> [!NOTE]
-> Environment variables such as `${SITE_USER}` are not automatically expanded in crontab. Replace `/home/mysite/` with the actual absolute path to your site directory:
-
-```cron
-*/10 * * * * docker compose -f /home/mysite/docker-compose.yaml run --rm --no-deps wp-cli cron event run --due-now >/dev/null 2>&1
-```
-
-### 8. Memory Limits
+### 7. Memory Limits
 
 If you need to change PHP memory limits, they must be adjusted **consistently** across three places:
 
@@ -184,7 +178,7 @@ If you need to change PHP memory limits, they must be adjusted **consistently** 
 2. `docker-compose.yaml` — `mem_limit` for the `wordpress` service
 3. `config/php/www.conf` — FPM pool memory-related directives
 
-### 9. Set Permissions
+### 8. Set Permissions
 
 After all directories, configurations, and secrets have been created and edited, set ownership to the site user across the entire directory and apply strict permissions:
 
@@ -196,7 +190,7 @@ sudo chmod 0600 /home/${SITE_USER}/.env
 sudo chmod 0600 /home/${SITE_USER}/wordpress.env
 ```
 
-### 10. Start the Stack
+### 9. Start the Stack
 
 Pull images and start:
 
@@ -226,9 +220,29 @@ docker compose -f /home/${SITE_USER}/docker-compose.yaml down
 ---
 
 <details>
+<summary><strong>External Angie</strong></summary>
+
+## Edge Reverse Proxy (External Angie)
+
+Each site stack includes an internal Angie container that handles FastCGI routing to PHP-FPM via the UNIX socket. It does **not** publish any ports on the host. An external Edge Angie instance running on the host acts as the hardened perimeter gateway: it terminates TLS, manages automated certificates, enforces perimeter security, and forwards incoming traffic to the internal site containers.
+
+The external Edge Angie operates in the **`frontend_gateway`** network (`172.20.0.0/16`). All WordPress site stacks connect their internal Angie container (`${SITE_USER}_angie`) to this network, allowing Edge Angie to route requests directly by container name.
+
+A complete, production-hardened, and optimized Edge reverse proxy deployment with a security-by-default architecture is available in the **[angie-docker-compose](https://github.com/webstudiobond/angie-docker-compose)** repository.
+
+See the canonical site virtual host template:
+* **[`data/conf.d/domains/wordpress.conf`](https://github.com/webstudiobond/angie-docker-compose/blob/main/data/conf.d/domains/wordpress.conf)** — production reverse proxy virtual host configuration (automated ACME TLS lifecycle, HTTP/3 QUIC, TLS 1.3 0-RTT anti-replay mitigation, upstream keepalive pooling to `${SITE_USER}_angie:80`, baseline security headers, HSTS, anonymous perimeter error pages, real client IP forwarding, tuned WordPress timeouts and body limits, etc.).
+
+</details>
+
+---
+
+<details>
 <summary><strong>WP-CLI</strong></summary>
 
-WP-CLI is an on-demand tool service under `profiles: [tools]` — it does not start with the main stack and only runs when explicitly invoked.
+WP-CLI is an on-demand tool service under `profiles: [tools]` — it does not start with the main stack and only runs when explicitly invoked. It shares the WordPress document root (`/var/www/html`) and communicates with MariaDB and Valkey over their UNIX domain sockets.
+
+> NOTE: In official documentation, commands are written with a leading `wp` (e.g., `wp core version`, `wp plugin list`). In this stack, `wp-cli` is the Docker Compose service name whose container entrypoint directly executes the `wp` binary. Consequently, you pass subcommands directly without typing `wp` again.
 
 See the [official WP-CLI command reference](https://developer.wordpress.org/cli/commands/) for all available commands.
 
@@ -239,7 +253,11 @@ docker compose -f /home/${SITE_USER}/docker-compose.yaml run --rm wp-cli plugin 
 docker compose -f /home/${SITE_USER}/docker-compose.yaml run --rm wp-cli plugin update --all
 ```
 
-For convenience, create a shell alias per site:
+> TIP: When the stack is already running, appending `--no-deps` (`run --rm --no-deps wp-cli ...`) skips dependency polling and health checks for `mariadb` and `valkey`, making commands execute instantaneously. If the stack is stopped or starting, omit `--no-deps` so Docker Compose automatically starts dependencies first.
+
+### Shell Alias for Interactive Use
+
+For convenience in interactive SSH sessions, you can define a shell function per site in `~/.bashrc`:
 
 ```bash
 nano ~/.bashrc
@@ -255,45 +273,103 @@ wp_mysite() {
 source ~/.bashrc
 ```
 
-For multiple sites, add a function per site (e.g. `wp_site1`, `wp_site2`). After that:
+For multiple sites, create a function per site (e.g. `wp_site1`, `wp_site2`). After that, run commands directly:
 
 ```bash
 wp_mysite core version
 wp_mysite plugin list
 ```
 
-### Database Backup (wp db export)
+> NOTE: Functions and aliases defined in `~/.bashrc` are only loaded in interactive login shells. System cron jobs and non-interactive scripts execute via `/bin/sh` without loading `~/.bashrc`, and must always use the full `docker compose -f ...` command.
 
-Create a fast, highly-compressed database backup using `zstd` (install with `sudo apt install -y zstd`):
+### Common Administrative Tasks
+
+Using the configured shell alias (e.g. `wp_mysite`):
+
+**Plugin management:**
 
 ```bash
-docker compose -f /home/mysite/docker-compose.yaml run --rm wp-cli db export - | zstd -q > /home/mysite/mariadb-backup/db_backup_$(date +%Y%m%d_%H%M%S).sql.zst
+# Check plugin list with available updates
+wp_mysite plugin list --fields=name,status,update,version
+
+# List plugins with available updates in JSON format
+wp_mysite plugin list --format=json --fields=name --update=available
+
+# Preview updates without modifying files
+wp_mysite plugin update --all --dry-run
+
+# Update a specific plugin or all plugins
+wp_mysite plugin update <plugin-name>
+wp_mysite plugin update --all
+
+# Update all plugins while excluding critical ones that require separate testing
+wp_mysite plugin update --all --exclude=plugin-name-1,plugin-name-2
+
+# Run command without loading active plugins (prevents crashes from broken plugin code)
+wp_mysite plugin update --all --skip-plugins
+```
+
+**Package management:**
+
+```bash
+# Install community WP-CLI packages (e.g. WP Rocket CLI)
+wp_mysite package install wp-media/wp-rocket-cli:trunk
+
+# List installed packages
+wp_mysite package list
+```
+
+**Maintenance mode:**
+
+```bash
+# Check current maintenance mode status
+wp_mysite maintenance-mode status
+
+# Activate maintenance mode before updates or migrations
+wp_mysite maintenance-mode activate
+
+# Deactivate maintenance mode once operations complete
+wp_mysite maintenance-mode deactivate
+```
+
+**Cache & permalinks:**
+
+```bash
+# Flush rewrite rules in the database (resolves 404 errors on custom post types or after migrations)
+wp_mysite rewrite flush
+
+# Flush persistent object cache
+wp_mysite cache flush
+```
+
+**Action Scheduler queue cleanup:**
+
+```bash
+# Clean completed and failed actions from the Action Scheduler queue
+wp_mysite action-scheduler clean --batches=20
+```
+
+### Manual Database Backup & Restore
+
+Create a fast, compressed database backup using `zstd`:
+
+```bash
+docker compose -f /home/${SITE_USER}/docker-compose.yaml run --rm wp-cli db export --single-transaction --quick - | zstd -q > /home/${SITE_USER}/mariadb-backup/db_backup_$(date +%Y%m%d_%H%M%S).sql.zst
 ```
 
 Or using the shell alias:
 
 ```bash
-wp_mysite db export - | zstd -q > /home/mysite/mariadb-backup/db_backup_$(date +%Y%m%d_%H%M%S).sql.zst
+wp_mysite db export --single-transaction --quick - | zstd -q > /home/mysite/mariadb-backup/db_backup_$(date +%Y%m%d_%H%M%S).sql.zst
 ```
 
-To automate daily backups, add a job to the site user's crontab (`sudo crontab -u ${SITE_USER} -e`):
-
-```cron
-# Daily backup at 03:00 (note: % characters must be escaped with \ in crontab)
-0 3 * * * docker compose -f /home/mysite/docker-compose.yaml run --rm --no-deps wp-cli db export - | zstd -q > /home/mysite/mariadb-backup/db_backup_$(date +\%Y\%m\%d_\%H\%M\%S).sql.zst
-```
-
-To automatically remove backups older than 14 days:
-
-```cron
-0 3 * * * docker compose -f /home/mysite/docker-compose.yaml run --rm --no-deps wp-cli db export - | zstd -q > /home/mysite/mariadb-backup/db_backup_$(date +\%Y\%m\%d_\%H\%M\%S).sql.zst && find /home/mysite/mariadb-backup -type f -name "*.sql.zst" -mtime +14 -delete
-```
-
-To restore a database dump:
+To restore a compressed database backup:
 
 ```bash
-zstd -dc /home/mysite/mariadb-backup/db_backup_YYYYMMDD_HHMMSS.sql.zst | wp_mysite db import -
+zstd -dc /home/${SITE_USER}/mariadb-backup/db_backup_YYYYMMDD_HHMMSS.sql.zst | docker compose -f /home/${SITE_USER}/docker-compose.yaml run --rm -T wp-cli db import -
 ```
+
+> NOTE: The `-T` flag disables pseudo-TTY allocation in Docker Compose, ensuring the piped SQL stream passes through stdin reliably without corruption or terminal escape sequences.
 
 ### CLI Host & URL Context
 
@@ -304,9 +380,9 @@ If your site or plugins rely on `HTTP_HOST` for dynamic URLs, configure the URL 
    sudo -u ${SITE_USER} nano /home/${SITE_USER}/data/wp-cli.yml
    ```
    ```yaml
-   url: https://example.com
+   url: https://wordpress.example
    ```
-2. **`WORDPRESS_CLI_HOST`:** Set `WORDPRESS_CLI_HOST=example.com` in `wordpress.env`.
+2. **`WORDPRESS_CLI_HOST`:** Set `WORDPRESS_CLI_HOST=wordpress.example` in `wordpress.env`.
 
 </details>
 
@@ -333,77 +409,266 @@ ssh -i ~/.ssh/id_ed25519 -p 22 -L 3307:127.0.0.1:3307 user@your-server-ip
 
 Connect your database client (DataGrip, DBeaver, TablePlus, VS Code Database Client, Zed) to `127.0.0.1:3307` using the database name from `secrets/db_name.txt`, username from `secrets/db_user.txt`, and password from `secrets/db_password.txt`. Most of these tools also support configuring SSH tunnels directly in their connection settings.
 
-> [!IMPORTANT]
-> Always stop the bridge when you are finished:
-> ```bash
-> docker compose -f /home/${SITE_USER}/docker-compose.yaml --profile tools stop db-bridge
-> ```
+> IMPORTANT: Always stop the bridge when you are finished:
+
+```bash
+docker compose -f /home/${SITE_USER}/docker-compose.yaml --profile tools stop db-bridge
+```
 
 </details>
 
 ---
 
 <details>
-<summary><strong>External Angie</strong></summary>
+<summary><strong>Additional Configuration &amp; Automation</strong></summary>
 
-## Edge Reverse Proxy (External Angie)
+## Server Cron & Automated Backups
 
-Each site stack includes an internal Angie container that handles FastCGI routing to PHP-FPM via the UNIX socket. It does **not** publish any ports on the host. An external Edge Angie instance running on the host terminates TLS and forwards incoming traffic to the internal Angie instances.
+WordPress by default uses a virtual cron (`wp-cron.php`) that runs asynchronously when visitors browse the site. On high-traffic sites, this wastes PHP worker processes; on low-traffic sites, scheduled tasks (such as publishing posts, checking updates, and background maintenance) may not trigger on time.
 
-The external Edge Angie operates in the **`frontend_gateway`** network. All WordPress site stacks connect their internal Angie container (`${SITE_USER}_angie`) to this network, allowing Edge Angie to route requests directly by container name.
+### 1. Disable Virtual Web Cron
 
-See the [official Angie configuration documentation](https://en.angie.software/angie/docs/configuration/) for detailed directive references.
+Set `WORDPRESS_DISABLE_CRON=true` in `/home/${SITE_USER}/wordpress.env`:
 
-Example Edge Angie site configuration with native ACME certificate management (`/etc/angie/http.d/mysite.conf`):
-
-```nginx
-acme_client example https://acme-v02.api.letsencrypt.org/directory;
-
-server {
-    listen 80;
-    listen [::]:80;
-
-    listen 443 ssl;
-
-    server_name example.com;
-
-    acme example;
-
-    ssl_certificate $acme_cert_example;
-    ssl_certificate_key $acme_cert_key_example;
-
-    ssl_protocols TLSv1.2 TLSv1.3;
-    ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384;
-    ssl_prefer_server_ciphers off;
-    ssl_session_timeout 1d;
-    ssl_session_tickets off;
-
-    access_log /var/log/angie/domains/example.com.log extended;
-    error_log /var/log/angie/domains/example.com.error.log error;
-
-    client_max_body_size 256M;
-
-    if ($scheme = http) {
-        return 301 https://$host$request_uri;
-    }
-
-    location / {
-        proxy_pass http://mysite_angie:80;
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_set_header X-Forwarded-Host $host;
-        proxy_set_header X-Forwarded-Port $server_port;
-        proxy_connect_timeout 60s;
-        proxy_send_timeout 300s;
-        proxy_read_timeout 300s;
-    }
-}
+```bash
+sudo -u ${SITE_USER} nano /home/${SITE_USER}/wordpress.env
 ```
 
-The `proxy_pass` target `mysite_angie` corresponds to the `container_name` of the internal Angie service (formatted as `${SITE_USER}_angie`).
+```ini
+WORDPRESS_DISABLE_CRON=true
+```
+
+### 2. Configure Dedicated System Cron
+
+Configure scheduled execution by placing an isolated configuration file in `/etc/cron.d/wordpress-${SITE_USER}`:
+
+```bash
+sudo tee /etc/cron.d/wordpress-${SITE_USER} > /dev/null <<EOF
+SHELL=/bin/sh
+PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
+
+# WordPress scheduled events (every 10 minutes)
+*/10 * * * * root docker compose -f /home/${SITE_USER}/docker-compose.yaml run --rm wp-cli cron event run --due-now >/dev/null 2>&1
+
+# Action Scheduler queue runner (every 5 minutes, recommended for WooCommerce & background task queues)
+*/5 * * * * root docker compose -f /home/${SITE_USER}/docker-compose.yaml run --rm wp-cli action-scheduler run --batches=5 >/dev/null 2>&1
+EOF
+
+sudo chmod 0644 /etc/cron.d/wordpress-${SITE_USER}
+```
+
+> NOTE:
+> * **Tenant Isolation:** Placing cron schedules in `/etc/cron.d/wordpress-${SITE_USER}` keeps each site's automation isolated.
+> * **Security & Permissions:** The host executes `docker compose` as `root` (to access the Docker daemon socket), while the WP-CLI container process inside strictly runs unprivileged under `${APP_UID}:${APP_GID}` (`${SITE_USER}`).
+> * **Non-Interactive Shell:** Cron executes via `/bin/sh` without sourcing user shell configurations like `~/.bashrc`. Therefore, full `docker compose -f ...` commands must be used instead of shell aliases (`wp_mysite`).
+> * **Cron File Naming:** Files in `/etc/cron.d/` must contain only alphanumeric characters, underscores, and hyphens (no periods or extensions).
+
+> TIP: Automated Database Backups: You can append a scheduled backup job to the same cron file to create fast, compressed database backups every 6 hours, retaining copies for 7 days.
+
+```bash
+sudo apt update && sudo apt install -y zstd
+```
+
+Update `/etc/cron.d/wordpress-${SITE_USER}`:
+
+```bash
+sudo tee /etc/cron.d/wordpress-${SITE_USER} > /dev/null <<'EOF'
+SHELL=/bin/sh
+PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
+
+# WordPress scheduled events (every 10 minutes)
+*/10 * * * * root docker compose -f /home/mysite/docker-compose.yaml run --rm wp-cli cron event run --due-now >/dev/null 2>&1
+
+# Action Scheduler queue runner (every 5 minutes, recommended for WooCommerce & background task queues)
+*/5 * * * * root docker compose -f /home/mysite/docker-compose.yaml run --rm wp-cli action-scheduler run --batches=5 >/dev/null 2>&1
+
+# Database backup every 6 hours (keeps backups for 7 days; % must be escaped as \% in cron)
+0 */6 * * * root docker compose -f /home/mysite/docker-compose.yaml run --rm wp-cli db export --single-transaction --quick - | zstd -q > /home/mysite/mariadb-backup/db_backup_$(date +\%Y\%m\%d_\%H\%M\%S).sql.zst && find /home/mysite/mariadb-backup -type f -name "*.sql.zst" -mtime +7 -delete && chown -R mysite:mysite /home/mysite/mariadb-backup
+EOF
+
+sudo chmod 0644 /etc/cron.d/wordpress-${SITE_USER}
+```
+
+In this configuration:
+* `zstd -q` compresses dumps on the fly with minimal CPU overhead.
+* `find ... -mtime +7 -delete` automatically removes backups older than 7 days, avoiding disk exhaustion.
+* `chown -R mysite:mysite /home/mysite/mariadb-backup` ensures the created backup files remain owned and accessible by the site user (host redirection `>` under a root cron job otherwise creates files owned by `root`).
+* In cron files, `%` signs in date formatting must be escaped as `\%`.
+
+</details>
+
+---
+
+<details>
+<summary><strong>Migration from a Classic Server</strong></summary>
+
+## Migrating an Existing Site (Bare-Metal → Containerized)
+
+Use this guide to move a running WordPress + MariaDB site from a classic LAMP/LEMP host into this stack. You will need: a **tar archive of the document root** and a **MariaDB dump in plain SQL**.
+
+> IMPORTANT: This stack loads database credentials, database name, and table prefix from **Docker secrets**, and uses its own secret-driven `wp-config.php`. The old `wp-config.php` file must **not** be carried over — it is excluded during archiving/extraction.
+
+### 1. On the source server — archive the files
+
+> NOTE: `/old/path/to/site/root` and `wordpress.example` throughout this guide are placeholders for your source server's document root and your site domain. You must replace them with your actual values in all commands.
+
+```bash
+tar -czf wordpress-files.tar.gz \
+  --exclude=wp-config.php \
+  -C /old/path/to/site/root .
+```
+
+> NOTE: Keep a copy of the old `wp-config.php` handy! If your existing site uses plugins with custom constants or licenses defined in `wp-config.php` (such as Object Cache Pro `WP_REDIS_CONFIG`, license tokens, SMTP settings, or security plugin constants), you will need to copy those specific definitions into the new configuration in step 3.
+
+### 2. On the source server — dump the database
+
+Export the site database to a plain SQL file:
+
+```bash
+mariadb-dump -uroot --single-transaction --quick wp_db_name > site.sql
+# Or if a password is required: mariadb-dump -uroot -p --single-transaction --quick wp_db_name > site.sql
+# (On older MySQL hosts, use mysqldump instead of mariadb-dump)
+```
+
+Transfer `wordpress-files.tar.gz` to `/home/${SITE_USER}/` and the SQL dump `site.sql` into `/home/${SITE_USER}/mariadb-backup/` (e.g. via `scp`/`rsync`).
+
+### 3. On the new host — prepare deployment and secrets
+
+Follow [Deployment & Setup](#deployment--setup) (steps 1–6) to create `${SITE_USER}`, directories, configuration files, and `.env`.
+
+When generating secrets (step 3), **`table_prefix.txt` MUST match the old site's `$table_prefix`** from the old `wp-config.php` so WordPress recognizes the imported tables.
+
+Review your old `wp-config.php` and transfer any plugin or theme-specific constants (such as `WP_REDIS_CONFIG`, license keys, SMTP options, or security constants) into the new `/home/${SITE_USER}/data/wp-config.php` (or into `wordpress.env` for environment-driven variables).
+
+### 4. Extract the archive and fix ownership
+
+```bash
+sudo -u ${SITE_USER} tar -xzf /home/${SITE_USER}/wordpress-files.tar.gz \
+  -C /home/${SITE_USER}/data \
+  --exclude=wp-config.php
+sudo chown -R ${SITE_USER}:${SITE_USER} /home/${SITE_USER}
+```
+
+### 5. Replace old filesystem paths in files
+
+On a classic host, WordPress was located at an arbitrary path (`/old/path/to/site/root`). In this containerized stack, the WordPress root is always `/var/www/html`.
+
+Before starting the containers, update all absolute filesystem paths inside `.php`, `.json`, `.ini`, `.txt`, `.conf`, and `.xml` files:
+
+```bash
+# Standard filesystem paths
+find /home/${SITE_USER}/data -type f \( -name "*.php" -o -name "*.json" -o -name "*.ini" -o -name "*.txt" -o -name "*.conf" -o -name "*.xml" \) -exec sed -i 's|/old/path/to/site/root|/var/www/html|g' {} +
+
+# JSON-escaped paths (common in security rewrite rules and serialized config files)
+find /home/${SITE_USER}/data -type f \( -name "*.php" -o -name "*.json" -o -name "*.ini" -o -name "*.txt" -o -name "*.conf" -o -name "*.xml" \) -exec sed -i 's|\\/old\\/path\\/to\\/site\\/root|\\/var\\/www\\/html|g' {} +
+```
+
+### 6. Start the stack
+
+```bash
+docker compose -f /home/${SITE_USER}/docker-compose.yaml up -d
+```
+
+On first start MariaDB creates the database and user from the secrets, and the `init` service synchronizes the WordPress core (`wp-admin/`, `wp-includes/`, root files) to the image version — old core files from the archive get upgraded automatically, user data and `wp-content/` are never touched.
+
+> WARNING: `/home/${SITE_USER}/mariadb` must be **empty** at the first start, otherwise the database and user from the secrets will not be created. If a previous experiment already initialized it, clear `mariadb/` before proceeding.
+
+### 7. Import the database dump
+
+You can import the database using either WP-CLI or your preferred desktop database client:
+
+#### Option A: Import via WP-CLI (recommended)
+
+Stream the plain SQL dump directly into MariaDB:
+
+```bash
+docker compose -f /home/${SITE_USER}/docker-compose.yaml run --rm -T wp-cli db import - < /home/${SITE_USER}/mariadb-backup/site.sql
+```
+
+#### Option B: Import via Desktop DB Client (DB Bridge)
+
+If you prefer a graphical interface:
+1. Start the database bridge as described in [DB Bridge](#db-bridge):
+   ```bash
+   docker compose -f /home/${SITE_USER}/docker-compose.yaml --profile tools up -d db-bridge
+   ```
+2. Establish the SSH tunnel and connect your client (DataGrip, DBeaver, TablePlus) to `127.0.0.1:3307`.
+3. Execute or import `site.sql` into the database named in `secrets/db_name.txt`.
+4. Stop the bridge when finished:
+   ```bash
+   docker compose -f /home/${SITE_USER}/docker-compose.yaml --profile tools stop db-bridge
+   ```
+
+### 8. Replace old filesystem paths in the database and flush caches
+
+The database often stores old filesystem paths in serialized plugin settings, widget caches, and options. Use WP-CLI to safely perform search-and-replace across all tables, then delete transients and flush the object cache:
+
+```bash
+# Dry run to preview changes
+docker compose -f /home/${SITE_USER}/docker-compose.yaml run --rm wp-cli search-replace '/old/path/to/site/root' '/var/www/html' --all-tables --dry-run
+
+# Apply changes to all tables
+docker compose -f /home/${SITE_USER}/docker-compose.yaml run --rm wp-cli search-replace '/old/path/to/site/root' '/var/www/html' --all-tables
+
+# Clear transients, flush object cache, and regenerate rewrite rules
+docker compose -f /home/${SITE_USER}/docker-compose.yaml run --rm wp-cli transient delete --all
+docker compose -f /home/${SITE_USER}/docker-compose.yaml run --rm wp-cli cache flush
+docker compose -f /home/${SITE_USER}/docker-compose.yaml run --rm wp-cli rewrite flush
+```
+
+### 9. Update Site URL (only if changed)
+
+If the site keeps the same domain and scheme, **skip this step**: all URLs in the dump remain valid.
+
+If the domain changed or if upgrading from plain HTTP to HTTPS, check the current database URLs:
+
+```bash
+docker compose -f /home/${SITE_USER}/docker-compose.yaml run --rm wp-cli option get siteurl
+docker compose -f /home/${SITE_USER}/docker-compose.yaml run --rm wp-cli option get home
+```
+
+Then update both WordPress options and rewrite URLs across all tables:
+
+```bash
+docker compose -f /home/${SITE_USER}/docker-compose.yaml run --rm wp-cli option update home 'https://wordpress.example'
+docker compose -f /home/${SITE_USER}/docker-compose.yaml run --rm wp-cli option update siteurl 'https://wordpress.example'
+docker compose -f /home/${SITE_USER}/docker-compose.yaml run --rm wp-cli search-replace 'http://old.wordpress.example' 'https://wordpress.example' --all-tables --skip-columns=guid
+```
+
+### 10. Verify Object Cache (if used)
+
+If the site uses an object cache drop-in (`object-cache.php`), verify that it connects to Valkey:
+
+```bash
+# Check status (works for both Redis Object Cache and Object Cache Pro):
+docker compose -f /home/${SITE_USER}/docker-compose.yaml run --rm wp-cli redis status
+
+# Detailed diagnostics (Object Cache Pro):
+docker compose -f /home/${SITE_USER}/docker-compose.yaml run --rm wp-cli redis diagnostics
+```
+
+### 11. Configure Edge Reverse Proxy & DNS
+
+Configure the domain virtual host in the host's Edge reverse proxy to route traffic to `${SITE_USER}_angie` (see [External Angie](#edge-reverse-proxy-external-angie)).
+
+> TIP: Pre-cutover Testing: You can safely test proxy routing and WordPress response directly on the server before pointing public DNS:
+
+```bash
+curl -k -I --resolve wordpress.example:443:127.0.0.1 https://wordpress.example
+```
+
+*(Replace `wordpress.example` with your actual domain).* Once verified, point your domain's DNS A/AAAA records to the server IP. Edge Angie's native ACME will automatically negotiate and issue the Let's Encrypt TLS certificate as soon as DNS traffic arrives.
+
+### 12. Verification
+
+```bash
+docker compose -f /home/${SITE_USER}/docker-compose.yaml run --rm wp-cli core version
+docker compose -f /home/${SITE_USER}/docker-compose.yaml run --rm wp-cli db check
+docker compose -f /home/${SITE_USER}/docker-compose.yaml run --rm wp-cli plugin list
+curl -I https://wordpress.example
+```
+
+Check the homepage, media assets, and the admin dashboard in your browser. Old `.htaccess` files from the archive are inert — the stack routes requests through the Angie proxy, not Apache.
 
 </details>
 

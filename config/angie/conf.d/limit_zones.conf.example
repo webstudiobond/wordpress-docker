@@ -1,0 +1,14 @@
+# Rate Limiting & Connection Limiting Zones
+# Included inside the http block
+#
+# IMPORTANT: Always customize the zone name (replace 'mysite' with your unique site name).
+# In Nginx/Angie, zone names reside in a shared memory pool. If multiple sites share the
+# same zone name, they will share request counters and throttle each other's legitimate traffic!
+#
+# For documentation and best practices, see:
+# - Angie limit_conn: https://en.angie.software/angie/docs/configuration/modules/http/http_limit_conn/
+# - Angie limit_req:  https://en.angie.software/angie/docs/configuration/modules/http/http_limit_req/
+# - Nginx: https://docs.nginx.com/nginx/admin-guide/security-controls/controlling-access-proxied-http/
+
+limit_req_zone $binary_remote_addr zone=limit_50r_mysite:10m rate=50r/s;
+limit_conn_zone $binary_remote_addr zone=addr_mysite:10m;

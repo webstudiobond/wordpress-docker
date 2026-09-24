@@ -28,7 +28,7 @@ services:
       - db_password
       - db_root_password
     healthcheck:
-      test: ["CMD", "mariadb-admin", "ping", "--socket=/var/run/sockets/mysql.sock", "--silent"]
+      test: ["CMD-SHELL", "export MYSQL_PWD=\"$(cat /run/secrets/db_password)\"; mariadb-admin ping --socket=/var/run/sockets/mysql.sock --user=\"$(cat /run/secrets/db_user)\" --silent"]
       interval: 10s
       timeout: 3s
       retries: 3
@@ -40,6 +40,7 @@ services:
       - sockets:/var/run/sockets
       - ./mariadb:/var/lib/mysql:rw,noexec,nosuid,nodev
       - ./config/mysql/my.cnf:/etc/mysql/conf.d/my.cnf:ro
+      - /etc/localtime:/etc/localtime:ro
     logging:
       driver: json-file
       options:
@@ -70,10 +71,11 @@ services:
       start_period: 5s
     tmpfs:
       - /tmp:mode=1777,noexec,nosuid,nodev,size=64m
-      - /data:mode=0700,noexec,nosuid,nodev,size=16m
+      - /data:mode=1777,noexec,nosuid,nodev,size=16m
     volumes:
       - sockets:/var/run/sockets
       - ./config/valkey/valkey.conf:/etc/valkey/valkey.conf:ro
+      - /etc/localtime:/etc/localtime:ro
     logging:
       driver: json-file
       options:
@@ -90,6 +92,7 @@ services:
       WP_CONTENT_DIR: ${WP_CONTENT_DIR:-wp-content}
     volumes:
       - ./${DATA_DIR:-data}:/var/www/html:rw
+      - /etc/localtime:/etc/localtime:ro
     logging:
       driver: json-file
       options:
@@ -151,6 +154,7 @@ services:
       - ./config/php/php.ini:/etc/php/${PHP_VERSION:-8.5}/fpm/conf.d/99-custom.ini:ro
       - ./config/php/opcache.ini:/etc/php/${PHP_VERSION:-8.5}/fpm/conf.d/10-opcache.ini:ro
       - ./config/php/www.conf:/etc/php/${PHP_VERSION:-8.5}/fpm/pool.d/www.conf:ro
+      - /etc/localtime:/etc/localtime:ro
     depends_on:
       init:
         condition: service_completed_successfully
@@ -185,6 +189,10 @@ services:
     cpus: 1.0
     environment:
       SITE_USER: "${SITE_USER}"
+      HOME: /var/www/.wp-cli
+      WP_CLI_PACKAGES_DIR: /var/www/.wp-cli/packages
+      WP_CLI_CACHE_DIR: /var/www/.wp-cli/cache
+      COMPOSER_HOME: /var/www/.wp-cli/composer
       WORDPRESS_DB_HOST: "localhost:/var/run/sockets/mysql.sock"
       WORDPRESS_DB_NAME_FILE: /run/secrets/db_name
       WORDPRESS_DB_USER_FILE: /run/secrets/db_user
@@ -213,11 +221,13 @@ services:
     volumes:
       - sockets:/var/run/sockets
       - ./tmp:/var/www/tmp:rw,noexec,nosuid,nodev
+      - ./.wp-cli:/var/www/.wp-cli:rw,noexec,nosuid,nodev
       - ./${DATA_DIR:-data}:/var/www/html:rw
       - ./${DATA_DIR:-data}/${WP_CONTENT_DIR:-wp-content}/uploads:/var/www/html/${WP_CONTENT_DIR:-wp-content}/uploads:rw,noexec,nosuid,nodev
       - ./secrets:/etc/wordpress/secrets:ro
       - ./config/php/php.ini:/etc/php/${PHP_VERSION:-8.5}/cli/conf.d/99-custom.ini:ro
       - ./config/php/opcache.ini:/etc/php/${PHP_VERSION:-8.5}/cli/conf.d/10-opcache.ini:ro
+      - /etc/localtime:/etc/localtime:ro
     depends_on:
       mariadb:
         condition: service_healthy
@@ -250,6 +260,7 @@ services:
       - "127.0.0.1:${DB_BRIDGE_PORT:-3307}:3306"
     volumes:
       - sockets:/var/run/sockets
+      - /etc/localtime:/etc/localtime:ro
     depends_on:
       mariadb:
         condition: service_healthy
@@ -288,7 +299,9 @@ services:
       - ./${DATA_DIR:-data}:/var/www/html:ro
       - ./tmp:/var/www/tmp:rw,noexec,nosuid,nodev
       - ./config/angie/angie.conf:/etc/angie/angie.conf:ro
+      - ./config/angie/modules.conf:/etc/angie/modules.conf:ro
       - ./config/angie/conf.d:/etc/angie/conf.d:ro
+      - /etc/localtime:/etc/localtime:ro
     networks:
       - frontend_gateway
     depends_on:
