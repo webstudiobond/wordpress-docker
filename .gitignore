@@ -12,6 +12,7 @@ secrets/
 wordpress.env
 
 data/
+!examples/data
 mariadb/
 mariadb-backup/
 tmp/

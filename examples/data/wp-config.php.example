@@ -1,0 +1,209 @@
+<?php
+/**
+ * The base configuration for WordPress, adapted for Docker Secrets & UNIX Sockets.
+ *
+ * This file is based on the official wp-config-sample.php / wp-config-docker.php.
+ * Copy this file to ./${DATA_DIR:-data}/wp-config.php when deploying a site.
+ *
+ * @link https://developer.wordpress.org/advanced-administration/wordpress/wp-config/
+ */
+
+if (!function_exists('get_docker_secret')) {
+    function get_docker_secret(string $name): string
+    {
+        $secretName = strtolower(str_replace(['WORDPRESS_', 'WP_'], '', $name));
+        $fileEnv = getenv('WORDPRESS_' . strtoupper($secretName) . '_FILE');
+        if ($fileEnv !== false && is_file($fileEnv)) {
+            $content = file_get_contents($fileEnv);
+            return $content !== false ? rtrim($content, "\r\n") : '';
+        }
+        $candidates = [
+            '/run/secrets/' . $secretName,
+            '/run/secrets/' . strtolower($name),
+            '/etc/wordpress/secrets/' . $secretName . '.txt',
+            '/etc/wordpress/secrets/' . strtolower($name) . '.txt',
+        ];
+        foreach ($candidates as $path) {
+            if (is_file($path)) {
+                $content = file_get_contents($path);
+                return $content !== false ? rtrim($content, "\r\n") : '';
+            }
+        }
+        return '';
+    }
+}
+
+if (!function_exists('getenv_docker')) {
+    function getenv_docker(string $env, string $default = ''): string
+    {
+        if ($fileEnv = getenv($env . '_FILE')) {
+            if (is_file($fileEnv)) {
+                $content = file_get_contents($fileEnv);
+                return $content !== false ? rtrim($content, "\r\n") : $default;
+            }
+            return $default;
+        }
+        $val = getenv($env);
+        return ($val !== false && $val !== '') ? $val : $default;
+    }
+}
+
+define('DB_NAME', get_docker_secret('db_name'));
+define('DB_USER', get_docker_secret('db_user'));
+define('DB_PASSWORD', get_docker_secret('db_password'));
+define('DB_HOST', getenv_docker('WORDPRESS_DB_HOST', 'localhost:/var/run/sockets/mysql.sock'));
+define('DB_CHARSET', getenv_docker('WORDPRESS_DB_CHARSET', 'utf8mb4'));
+define('DB_COLLATE', getenv_docker('WORDPRESS_DB_COLLATE', ''));
+
+define('AUTH_KEY',         get_docker_secret('auth_key'));
+define('SECURE_AUTH_KEY',  get_docker_secret('secure_auth_key'));
+define('LOGGED_IN_KEY',    get_docker_secret('logged_in_key'));
+define('NONCE_KEY',        get_docker_secret('nonce_key'));
+define('AUTH_SALT',        get_docker_secret('auth_salt'));
+define('SECURE_AUTH_SALT', get_docker_secret('secure_auth_salt'));
+define('LOGGED_IN_SALT',   get_docker_secret('logged_in_salt'));
+define('NONCE_SALT',       get_docker_secret('nonce_salt'));
+
+$table_prefix = get_docker_secret('table_prefix');
+
+if (
+    DB_NAME === '' ||
+    DB_USER === '' ||
+    DB_PASSWORD === '' ||
+    $table_prefix === '' ||
+    AUTH_KEY === '' ||
+    SECURE_AUTH_KEY === '' ||
+    LOGGED_IN_KEY === '' ||
+    NONCE_KEY === '' ||
+    AUTH_SALT === '' ||
+    SECURE_AUTH_SALT === '' ||
+    LOGGED_IN_SALT === '' ||
+    NONCE_SALT === ''
+) {
+    throw new RuntimeException('Required Docker Secrets are missing or empty.');
+}
+
+define('WP_DEBUG', filter_var(getenv_docker('WORDPRESS_DEBUG', 'false'), FILTER_VALIDATE_BOOLEAN));
+if ($debugLog = getenv_docker('WORDPRESS_DEBUG_LOG')) {
+    define('WP_DEBUG_LOG', filter_var($debugLog, FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE) ?? $debugLog);
+}
+if (($debugDisplay = getenv_docker('WORDPRESS_DEBUG_DISPLAY')) !== '') {
+    define('WP_DEBUG_DISPLAY', filter_var($debugDisplay, FILTER_VALIDATE_BOOLEAN));
+}
+
+if (isset($_SERVER['HTTP_X_FORWARDED_PROTO']) && is_string($_SERVER['HTTP_X_FORWARDED_PROTO']) && strpos($_SERVER['HTTP_X_FORWARDED_PROTO'], 'https') !== false) {
+    $_SERVER['HTTPS'] = 'on';
+}
+if (isset($_SERVER['HTTP_X_FORWARDED_HOST'])) {
+    $_SERVER['HTTP_HOST'] = $_SERVER['HTTP_X_FORWARDED_HOST'];
+}
+if (defined('WP_CLI') && WP_CLI && !isset($_SERVER['HTTP_HOST'])) {
+    if ($cliHost = getenv_docker('WORDPRESS_CLI_HOST')) {
+        $_SERVER['HTTP_HOST'] = $cliHost;
+    }
+}
+
+define('FS_METHOD', 'direct');
+define('FS_CHMOD_DIR', octdec(getenv_docker('WORDPRESS_FS_CHMOD_DIR', '0755')));
+define('FS_CHMOD_FILE', octdec(getenv_docker('WORDPRESS_FS_CHMOD_FILE', '0644')));
+
+$content_dir = getenv_docker('WORDPRESS_CONTENT_DIR', 'wp-content');
+if ($content_dir !== 'wp-content') {
+    define('WP_CONTENT_DIR', __DIR__ . '/' . $content_dir);
+    $http_host = is_string($_SERVER['HTTP_HOST'] ?? null) ? $_SERVER['HTTP_HOST'] : 'localhost';
+    $http_scheme = (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on') ? 'https://' : 'http://';
+    define('WP_CONTENT_URL', $http_scheme . $http_host . '/' . $content_dir);
+}
+
+define('WP_TEMP_DIR', '/var/www/tmp');
+define('DISALLOW_FILE_EDIT', filter_var(getenv_docker('WORDPRESS_DISALLOW_FILE_EDIT', 'true'), FILTER_VALIDATE_BOOLEAN));
+
+if (($autoUpdate = getenv_docker('WORDPRESS_AUTOMATIC_UPDATER_DISABLED')) !== '') {
+    define('AUTOMATIC_UPDATER_DISABLED', filter_var($autoUpdate, FILTER_VALIDATE_BOOLEAN));
+}
+if (($postRevisions = getenv_docker('WORDPRESS_POST_REVISIONS')) !== '') {
+    define('WP_POST_REVISIONS', is_numeric($postRevisions) ? (int) $postRevisions : filter_var($postRevisions, FILTER_VALIDATE_BOOLEAN));
+}
+
+if (($disableCron = getenv_docker('WORDPRESS_DISABLE_CRON')) !== '') {
+    define('DISABLE_WP_CRON', filter_var($disableCron, FILTER_VALIDATE_BOOLEAN));
+}
+if ($memoryLimit = getenv_docker('WORDPRESS_MEMORY_LIMIT')) {
+    define('WP_MEMORY_LIMIT', $memoryLimit);
+}
+if ($maxMemoryLimit = getenv_docker('WORDPRESS_MAX_MEMORY_LIMIT')) {
+    define('WP_MAX_MEMORY_LIMIT', $maxMemoryLimit);
+}
+if ($wpHome = getenv_docker('WORDPRESS_HOME')) {
+    define('WP_HOME', $wpHome);
+}
+if ($wpSiteurl = getenv_docker('WORDPRESS_SITEURL')) {
+    define('WP_SITEURL', $wpSiteurl);
+}
+
+$sbCode = get_docker_secret('wp_sb_code') ?: getenv_docker('WP_SB_CODE');
+if ($sbCode !== '') {
+    define('WP_SB_CODE', $sbCode);
+}
+$rocketCfKey = get_docker_secret('wp_rocket_cf_api_key') ?: getenv_docker('WP_ROCKET_CF_API_KEY');
+if ($rocketCfKey !== '') {
+    define('WP_ROCKET_CF_API_KEY', $rocketCfKey);
+}
+
+/**
+ * Object Cache (Valkey / Redis)
+ * @link https://objectcache.pro/docs/configuration-options
+ */
+$redisDisabled = filter_var(getenv_docker('WP_REDIS_DISABLED', 'false'), FILTER_VALIDATE_BOOLEAN);
+if (!$redisDisabled && extension_loaded('redis')) {
+    $redisPrefix = getenv_docker('WP_REDIS_PREFIX', getenv_docker('SITE_USER', 'wp') . '_');
+    $redisDatabase = (int) getenv_docker('WP_REDIS_DATABASE', '0');
+
+    $redisToken = get_docker_secret('wp_redis_token') ?: get_docker_secret('redis_token') ?: getenv_docker('WP_REDIS_TOKEN');
+    if ($redisToken !== '') {
+        define('WP_REDIS_CONFIG', [
+            'token' => $redisToken,
+            'client' => 'phpredis',
+            'host' => '/var/run/sockets/valkey.sock',
+            'port' => 0,
+            'database' => $redisDatabase,
+            'prefix' => $redisPrefix,
+            'maxttl' => 604800,
+            'timeout' => 0.5,
+            'read_timeout' => 0.5,
+            'retry_interval' => 10,
+            'retries' => 3,
+            'backoff' => 'smart',
+            'compression' => 'zstd',
+            'serializer' => 'igbinary',
+            'prefetch' => true,
+            'split_alloptions' => true,
+            'shared' => true,
+            'updates' => false,
+            'debug' => false,
+            'save_commands' => false,
+            'non_prefetchable_groups' => [
+                'site-transient',
+            ],
+        ]);
+    } else {
+        define('WP_REDIS_SCHEME', 'unix');
+        define('WP_REDIS_PATH', '/var/run/sockets/valkey.sock');
+        define('WP_REDIS_PREFIX', $redisPrefix);
+        define('WP_REDIS_DATABASE', $redisDatabase);
+    }
+}
+
+/* Add any custom values between this line and the "stop editing" line. */
+
+
+
+/* That's all, stop editing! Happy publishing. */
+
+/** Absolute path to the WordPress directory. */
+if (!defined('ABSPATH')) {
+    define('ABSPATH', __DIR__ . '/');
+}
+
+/** Sets up WordPress vars and included files. */
+require_once ABSPATH . 'wp-settings.php';
