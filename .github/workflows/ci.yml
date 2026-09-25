@@ -28,7 +28,7 @@ jobs:
         with:
           php-version: '8.5'
           coverage: none
-          tools: phpstan, phpcs
+          tools: phpstan, phpcs, phpunit
 
       - name: Lint PHP syntax
         run: |
@@ -39,6 +39,9 @@ jobs:
 
       - name: Analyze code with PHPStan (Level 9)
         run: phpstan analyse --debug --no-progress
+
+      - name: Run PHPUnit tests
+        run: phpunit --no-coverage
 
       - name: Test wp-sync.php execution
         run: php build/wp-sync.php

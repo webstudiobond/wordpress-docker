@@ -16,3 +16,6 @@ mariadb/
 mariadb-backup/
 tmp/
 .wp-cli/
+
+.phpunit.cache/
+vendor/

@@ -1,5 +1,5 @@
 parameters:
     level: 9
     paths:
-        - build/wp-sync.php
-        - examples/wp-config.php.example
+        - build
+        - examples/data/wp-config.php.example

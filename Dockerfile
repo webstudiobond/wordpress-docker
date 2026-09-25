@@ -92,7 +92,7 @@ ENTRYPOINT ["wp"]
 FROM base AS fpm
 
 COPY --from=wordpress-donor /usr/src/wordpress /usr/src/wordpress
-COPY --chmod=0755 build/wp-sync.php /usr/local/bin/wp-sync.php
+COPY --chmod=0755 build/FilesystemInterface.php build/NativeFilesystem.php build/WordPressSync.php build/wp-sync.php /usr/local/bin/
 
 RUN rm -f /bin/sh /bin/dash /bin/bash /usr/bin/sh /usr/bin/dash /usr/bin/bash
 

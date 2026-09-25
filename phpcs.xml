@@ -2,7 +2,8 @@
 <ruleset name="WordPressDocker">
     <description>Coding standards for WordPress Docker infrastructure scripts</description>
 
-    <file>build/wp-sync.php</file>
+    <file>build</file>
+    <file>tests</file>
 
     <arg name="colors"/>
     <arg value="sp"/>
