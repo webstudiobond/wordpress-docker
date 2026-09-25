@@ -300,6 +300,7 @@ services:
       - ./tmp:/var/www/tmp:rw,noexec,nosuid,nodev
       - ./config/angie/angie.conf:/etc/angie/angie.conf:ro
       - ./config/angie/modules.conf:/etc/angie/modules.conf:ro
+      - ./config/angie/mime.types:/etc/angie/mime.types:ro
       - ./config/angie/conf.d:/etc/angie/conf.d:ro
       - /etc/localtime:/etc/localtime:ro
     networks:

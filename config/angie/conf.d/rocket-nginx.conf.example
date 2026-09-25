@@ -8,10 +8,10 @@
 # Maintainer: SatelliteWP.com
 # URL: https://github.com/satellitewp/rocket-nginx
 #
-# Tested with WP-Rocket version: 3.19.3
-# Tested with NGINX: 1.29.1 (mainline)
+# Tested with WP-Rocket version: 3.21.3
+# Tested with NGINX: 1.31.1 (mainline)
 #
-# Version 3.1.1 (Generate your own config with php rocket-parser.php)
+# Version 3.1.2 (Generate your own config with php rocket-parser.php)
 #
 ###################################################################################################
 
@@ -287,7 +287,7 @@ include /etc/angie/conf.d/rocket-nginx/global.*.conf;
 location ~* \.css$ {
 	etag on;
 	gzip_vary on;
-	expires 30d;
+	expires 90d;
 
 	# Global includes
 	include /etc/angie/conf.d/rocket-nginx/global.*.conf;
@@ -303,7 +303,7 @@ location ~* \.css$ {
 location ~* \.js$ {
 	etag on;
 	gzip_vary on;
-	expires 30d;
+	expires 90d;
 
 	# Global includes
 	include /etc/angie/conf.d/rocket-nginx/global.*.conf;

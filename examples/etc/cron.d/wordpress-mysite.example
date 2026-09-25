@@ -1,0 +1,11 @@
+SHELL=/bin/sh
+PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
+
+# WordPress scheduled events (every 10 minutes)
+*/10 * * * * root docker compose -f /home/mysite/docker-compose.yaml run --rm wp-cli cron event run --due-now >/dev/null 2>&1
+
+# Action Scheduler queue runner (every 5 minutes, recommended for WooCommerce & background task queues)
+*/5 * * * * root docker compose -f /home/mysite/docker-compose.yaml run --rm wp-cli action-scheduler run --batches=5 >/dev/null 2>&1
+
+# Database backup every 6 hours (keeps backups for 7 days; % must be escaped as \% in cron)
+0 */6 * * * root docker compose -f /home/mysite/docker-compose.yaml run --rm wp-cli db export --single-transaction --quick - | zstd -q > /home/mysite/mariadb-backup/db_backup_$(date +\%Y\%m\%d_\%H\%M\%S).sql.zst && find /home/mysite/mariadb-backup -type f -name "*.sql.zst" -mtime +7 -delete && chown -R mysite:mysite /home/mysite/mariadb-backup

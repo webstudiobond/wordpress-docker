@@ -51,6 +51,7 @@ Production-ready, fully decoupled, and resource-efficient containerized WordPres
 │   │   └── valkey.conf              # Memory limit, eviction policy, UNIX socket
 │   └── angie/                       # Angie reverse proxy configuration
 │       ├── angie.conf               # Main server config with FastCGI routing
+│       ├── mime.types               # MIME type mappings for static assets
 │       ├── modules.conf             # Dynamic modules activation (Brotli, Zstd, etc.)
 │       └── conf.d/                  # Custom site snippets (blockbots, cache rules, etc.)
 ├── mariadb/                         # Persistent MariaDB data volume
@@ -58,7 +59,7 @@ Production-ready, fully decoupled, and resource-efficient containerized WordPres
 ├── tmp/                             # Upload buffering directory (avoids RAM exhaustion)
 ├── .wp-cli/                         # WP-CLI packages and Composer cache directory
 └── data/                            # WordPress document root
-    ├── wp-config.php                # Site configuration (from examples/wp-config.php.example)
+    ├── wp-config.php                # Site configuration (from examples/data/wp-config.php.example)
     └── ...                          # WordPress core files (auto-populated by init service)
 ```
 
@@ -140,6 +141,7 @@ sudo -u ${SITE_USER} curl -fsSL ${REPO}/config/php/www.conf -o /home/${SITE_USER
 sudo -u ${SITE_USER} curl -fsSL ${REPO}/config/mysql/my.cnf -o /home/${SITE_USER}/config/mysql/my.cnf
 sudo -u ${SITE_USER} curl -fsSL ${REPO}/config/valkey/valkey.conf -o /home/${SITE_USER}/config/valkey/valkey.conf
 sudo -u ${SITE_USER} curl -fsSL ${REPO}/config/angie/angie.conf -o /home/${SITE_USER}/config/angie/angie.conf
+sudo -u ${SITE_USER} curl -fsSL ${REPO}/config/angie/mime.types -o /home/${SITE_USER}/config/angie/mime.types
 sudo -u ${SITE_USER} curl -fsSL ${REPO}/config/angie/modules.conf -o /home/${SITE_USER}/config/angie/modules.conf
 ```
 
@@ -149,7 +151,7 @@ sudo -u ${SITE_USER} curl -fsSL ${REPO}/config/angie/modules.conf -o /home/${SIT
 sudo -u ${SITE_USER} curl -fsSL ${REPO}/docker-compose.yaml -o /home/${SITE_USER}/docker-compose.yaml
 sudo -u ${SITE_USER} curl -fsSL ${REPO}/examples/.env.example -o /home/${SITE_USER}/.env
 sudo -u ${SITE_USER} curl -fsSL ${REPO}/examples/wordpress.env.example -o /home/${SITE_USER}/wordpress.env
-sudo -u ${SITE_USER} curl -fsSL ${REPO}/examples/wp-config.php.example -o /home/${SITE_USER}/data/wp-config.php
+sudo -u ${SITE_USER} curl -fsSL ${REPO}/examples/data/wp-config.php.example -o /home/${SITE_USER}/data/wp-config.php
 ```
 
 ### 6. Configure Environment
@@ -232,6 +234,32 @@ A complete, production-hardened, and optimized Edge reverse proxy deployment wit
 
 See the canonical site virtual host template:
 * **[`data/conf.d/domains/wordpress.conf`](https://github.com/webstudiobond/angie-docker-compose/blob/main/data/conf.d/domains/wordpress.conf)** — production reverse proxy virtual host configuration (automated ACME TLS lifecycle, HTTP/3 QUIC, TLS 1.3 0-RTT anti-replay mitigation, upstream keepalive pooling to `${SITE_USER}_angie:80`, baseline security headers, HSTS, anonymous perimeter error pages, real client IP forwarding, tuned WordPress timeouts and body limits, etc.).
+
+For each WordPress site, download the template into your Edge Angie configuration directory (`data/conf.d/domains/`), renaming the config file to your unique site identifier (e.g., `${SITE_USER}.conf` as defined earlier):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/webstudiobond/angie-docker-compose/main/data/conf.d/domains/wordpress.conf \
+  -o data/conf.d/domains/${SITE_USER}.conf
+```
+
+> WARNING: Replace 'wordpress.example' with your domain and 'mysite' with '${SITE_USER}' so upstream requests resolve to '${SITE_USER}_angie:80'.
+
+Substitute the placeholders inside the downloaded configuration file using `sed`:
+
+```bash
+DOMAIN="example.com"
+
+sed -i \
+  -e "s|wordpress\.example|${DOMAIN}|g" \
+  -e "s|mysite|${SITE_USER}|g" \
+  data/conf.d/domains/${SITE_USER}.conf
+```
+
+Review and customize the configuration as needed (for example, add the `www` subdomain to `server_name` or adjust `Conditional Access Logging` rules):
+
+```bash
+nano data/conf.d/domains/${SITE_USER}.conf
+```
 
 </details>
 
@@ -440,20 +468,49 @@ WORDPRESS_DISABLE_CRON=true
 
 ### 2. Configure Dedicated System Cron
 
-Configure scheduled execution by placing an isolated configuration file in `/etc/cron.d/wordpress-${SITE_USER}`:
+Configuration examples ([full example](examples/etc/cron.d/wordpress-mysite.example)):
+
+**WordPress scheduled events (every 10 minutes):**
+```cron
+*/10 * * * * root docker compose -f /home/mysite/docker-compose.yaml run --rm wp-cli cron event run --due-now >/dev/null 2>&1
+```
+
+**Action Scheduler queue runner (every 5 minutes, recommended for WooCommerce & background task queues):**
+```cron
+*/5 * * * * root docker compose -f /home/mysite/docker-compose.yaml run --rm wp-cli action-scheduler run --batches=5 >/dev/null 2>&1
+```
+
+**Automated database backup (every 6 hours, keeps backups for 7 days):**
+```cron
+0 */6 * * * root docker compose -f /home/mysite/docker-compose.yaml run --rm wp-cli db export --single-transaction --quick - | zstd -q > /home/mysite/mariadb-backup/db_backup_$(date +\%Y\%m\%d_\%H\%M\%S).sql.zst && find /home/mysite/mariadb-backup -type f -name "*.sql.zst" -mtime +7 -delete && chown -R mysite:mysite /home/mysite/mariadb-backup
+```
+> NOTE:
+> The automated backup job requires `zstd` installed on the host (`sudo apt update && sudo apt install -y zstd`).
+
+#### Pre-configured Cron File
+
+Download the template directly into `/etc/cron.d/`, specifying your unique site identifier in the destination filename (files in `/etc/cron.d/` must not contain extensions):
 
 ```bash
-sudo tee /etc/cron.d/wordpress-${SITE_USER} > /dev/null <<EOF
-SHELL=/bin/sh
-PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
+sudo curl -fsSL https://raw.githubusercontent.com/webstudiobond/wordpress-docker/main/examples/etc/cron.d/wordpress-mysite.example \
+  -o /etc/cron.d/wordpress-${SITE_USER}
+```
 
-# WordPress scheduled events (every 10 minutes)
-*/10 * * * * root docker compose -f /home/${SITE_USER}/docker-compose.yaml run --rm wp-cli cron event run --due-now >/dev/null 2>&1
+Replace the placeholder `mysite` with your unique site identifier (`${SITE_USER}`):
 
-# Action Scheduler queue runner (every 5 minutes, recommended for WooCommerce & background task queues)
-*/5 * * * * root docker compose -f /home/${SITE_USER}/docker-compose.yaml run --rm wp-cli action-scheduler run --batches=5 >/dev/null 2>&1
-EOF
+```bash
+sudo sed -i "s|mysite|${SITE_USER}|g" /etc/cron.d/wordpress-${SITE_USER}
+```
 
+Fine-tune the schedule to your requirements if needed (for example, modify task execution intervals, change backup frequencies, or adjust the backup retention period):
+
+```bash
+sudo nano /etc/cron.d/wordpress-${SITE_USER}
+```
+
+Set permissions:
+
+```bash
 sudo chmod 0644 /etc/cron.d/wordpress-${SITE_USER}
 ```
 
@@ -462,38 +519,6 @@ sudo chmod 0644 /etc/cron.d/wordpress-${SITE_USER}
 > * **Security & Permissions:** The host executes `docker compose` as `root` (to access the Docker daemon socket), while the WP-CLI container process inside strictly runs unprivileged under `${APP_UID}:${APP_GID}` (`${SITE_USER}`).
 > * **Non-Interactive Shell:** Cron executes via `/bin/sh` without sourcing user shell configurations like `~/.bashrc`. Therefore, full `docker compose -f ...` commands must be used instead of shell aliases (`wp_mysite`).
 > * **Cron File Naming:** Files in `/etc/cron.d/` must contain only alphanumeric characters, underscores, and hyphens (no periods or extensions).
-
-> TIP: Automated Database Backups: You can append a scheduled backup job to the same cron file to create fast, compressed database backups every 6 hours, retaining copies for 7 days.
-
-```bash
-sudo apt update && sudo apt install -y zstd
-```
-
-Update `/etc/cron.d/wordpress-${SITE_USER}`:
-
-```bash
-sudo tee /etc/cron.d/wordpress-${SITE_USER} > /dev/null <<'EOF'
-SHELL=/bin/sh
-PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
-
-# WordPress scheduled events (every 10 minutes)
-*/10 * * * * root docker compose -f /home/mysite/docker-compose.yaml run --rm wp-cli cron event run --due-now >/dev/null 2>&1
-
-# Action Scheduler queue runner (every 5 minutes, recommended for WooCommerce & background task queues)
-*/5 * * * * root docker compose -f /home/mysite/docker-compose.yaml run --rm wp-cli action-scheduler run --batches=5 >/dev/null 2>&1
-
-# Database backup every 6 hours (keeps backups for 7 days; % must be escaped as \% in cron)
-0 */6 * * * root docker compose -f /home/mysite/docker-compose.yaml run --rm wp-cli db export --single-transaction --quick - | zstd -q > /home/mysite/mariadb-backup/db_backup_$(date +\%Y\%m\%d_\%H\%M\%S).sql.zst && find /home/mysite/mariadb-backup -type f -name "*.sql.zst" -mtime +7 -delete && chown -R mysite:mysite /home/mysite/mariadb-backup
-EOF
-
-sudo chmod 0644 /etc/cron.d/wordpress-${SITE_USER}
-```
-
-In this configuration:
-* `zstd -q` compresses dumps on the fly with minimal CPU overhead.
-* `find ... -mtime +7 -delete` automatically removes backups older than 7 days, avoiding disk exhaustion.
-* `chown -R mysite:mysite /home/mysite/mariadb-backup` ensures the created backup files remain owned and accessible by the site user (host redirection `>` under a root cron job otherwise creates files owned by `root`).
-* In cron files, `%` signs in date formatting must be escaped as `\%`.
 
 </details>
 
