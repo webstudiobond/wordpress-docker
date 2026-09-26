@@ -1,9 +1,9 @@
 # Hardened Containerized WordPress
 
 [![CI](https://github.com/webstudiobond/wordpress-docker/actions/workflows/ci.yml/badge.svg)](https://github.com/webstudiobond/wordpress-docker/actions/workflows/ci.yml)
-[![GitHub last commit](https://img.shields.io/github/last-commit/underhax/mihomo-warp-proxy)](https://github.com/webstudiobond/wordpress-docker/commits/main)
-[![GitHub issues](https://img.shields.io/github/issues/underhax/mihomo-warp-proxy)](https://github.com/webstudiobond/wordpress-docker/issues)
-[![GitHub repo size](https://img.shields.io/github/repo-size/underhax/mihomo-warp-proxy)](https://github.com/webstudiobond/wordpress-docker)
+[![GitHub last commit](https://img.shields.io/github/last-commit/webstudiobond/angie-docker-compose)](https://github.com/webstudiobond/wordpress-docker/commits/main)
+[![GitHub issues](https://img.shields.io/github/issues/webstudiobond/angie-docker-compose)](https://github.com/webstudiobond/wordpress-docker/issues)
+[![GitHub repo size](https://img.shields.io/github/repo-size/webstudiobond/angie-docker-compose)](https://github.com/webstudiobond/wordpress-docker)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 Production-ready, fully decoupled, and resource-efficient containerized WordPress deployment architecture for multi-tenant hosts. Built on the latest-generation [PHP-FPM](https://packages.sury.org/php/) with all extensions required by WordPress (MySQLi, PDO, cURL, mbstring, XML, GD, Intl, Zip, BCMath, Exif) plus additional modules (Redis, igbinary, zstd, ImageMagick, APCu, GMP, OPcache) and media codecs (WebP, AVIF) pre-installed in the image, latest LTS [MariaDB](https://mariadb.org/), [Angie](https://en.angie.software/) reverse proxy, and [Valkey](https://valkey.io/) in-memory cache.
