@@ -235,11 +235,12 @@ A complete, production-hardened, and optimized Edge reverse proxy deployment wit
 See the canonical site virtual host template:
 * **[`data/conf.d/domains/wordpress.conf`](https://github.com/webstudiobond/angie-docker-compose/blob/main/data/conf.d/domains/wordpress.conf)** — production reverse proxy virtual host configuration (automated ACME TLS lifecycle, HTTP/3 QUIC, TLS 1.3 0-RTT anti-replay mitigation, upstream keepalive pooling to `${SITE_USER}_angie:80`, baseline security headers, HSTS, anonymous perimeter error pages, real client IP forwarding, tuned WordPress timeouts and body limits, etc.).
 
-For each WordPress site, download the template into your Edge Angie configuration directory (`data/conf.d/domains/`), renaming the config file to your unique site identifier (e.g., `${SITE_USER}.conf` as defined earlier):
+For each WordPress site, download the template into your Edge Angie configuration directory (`${DATA_ANGIE}/conf.d/domains/`), renaming the config file to your unique site identifier (e.g., `${SITE_USER}.conf` as defined earlier):
 
 ```bash
+DATA_ANGIE="/home/angie/data"
 curl -fsSL https://raw.githubusercontent.com/webstudiobond/angie-docker-compose/main/data/conf.d/domains/wordpress.conf \
-  -o data/conf.d/domains/${SITE_USER}.conf
+  -o ${DATA_ANGIE}/conf.d/domains/${SITE_USER}.conf
 ```
 
 > WARNING: Replace 'wordpress.example' with your domain and 'mysite' with '${SITE_USER}' so upstream requests resolve to '${SITE_USER}_angie:80'.
@@ -252,13 +253,13 @@ DOMAIN="example.com"
 sed -i \
   -e "s|wordpress\.example|${DOMAIN}|g" \
   -e "s|mysite|${SITE_USER}|g" \
-  data/conf.d/domains/${SITE_USER}.conf
+  ${DATA_ANGIE}/conf.d/domains/${SITE_USER}.conf
 ```
 
 Review and customize the configuration as needed (for example, add the `www` subdomain to `server_name` or adjust `Conditional Access Logging` rules):
 
 ```bash
-nano data/conf.d/domains/${SITE_USER}.conf
+nano ${DATA_ANGIE}/conf.d/domains/${SITE_USER}.conf
 ```
 
 </details>
