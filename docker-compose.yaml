@@ -71,7 +71,6 @@ services:
       start_period: 5s
     tmpfs:
       - /tmp:mode=1777,noexec,nosuid,nodev,size=64m
-      - /data:mode=1777,noexec,nosuid,nodev,size=16m
     volumes:
       - sockets:/var/run/sockets
       - ./config/valkey/valkey.conf:/etc/valkey/valkey.conf:ro
@@ -264,6 +263,47 @@ services:
         max-size: 5m
         max-file: "2"
 
+  notifier:
+    image: ghcr.io/webstudiobond/go-notifier:${GO_NOTIFIER_VERSION:-latest}
+    container_name: "${SITE_USER}_notifier"
+    hostname: "${SITE_USER}-notifier"
+    restart: always
+    healthcheck:
+      test: ["CMD", "/usr/bin/go-notifier", "healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+    user: "${APP_UID}:${APP_GID}"
+    read_only: true
+    cap_drop:
+      - ALL
+    cap_add: []
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 64m
+    cpus: 0.5
+    pids_limit: 30
+    env_file:
+      - path: ./notifier.env
+        required: false
+    environment:
+      SITE_NAME: "${SITE_NAME:-${SITE_USER}}"
+    secrets:
+      - smtp_host
+      - smtp_port
+      - smtp_mail
+      - smtp_password
+    volumes:
+      - sockets:/var/run/sockets
+      - ./secrets:/etc/notifier/secrets:ro
+      - /etc/localtime:/etc/localtime:ro
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
   angie:
     image: docker.angie.software/angie:latest
     container_name: "${SITE_USER}_angie"
@@ -335,6 +375,14 @@ secrets:
     file: ./secrets/logged_in_salt.txt
   nonce_salt:
     file: ./secrets/nonce_salt.txt
+  smtp_host:
+    file: ./secrets/smtp_host.txt
+  smtp_port:
+    file: ./secrets/smtp_port.txt
+  smtp_mail:
+    file: ./secrets/smtp_mail.txt
+  smtp_password:
+    file: ./secrets/smtp_password.txt
 
 volumes:
   sockets:
@@ -342,7 +390,7 @@ volumes:
     driver_opts:
       type: tmpfs
       device: tmpfs
-      o: "size=16m,mode=0700,uid=${APP_UID:-1000},gid=${APP_GID:-1000},noexec,nosuid,nodev"
+      o: "size=16m,mode=0700,uid=${APP_UID},gid=${APP_GID},noexec,nosuid,nodev"
 
 networks:
   frontend_gateway:

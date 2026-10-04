@@ -1,0 +1,186 @@
+<?php
+
+declare(strict_types=1);
+
+/**
+ * Optimizes WordPress administration performance during updates and external HTTP requests.
+ */
+final class WpPerformance
+{
+    private const array DEFAULT_TARGET_PAGES = [
+        'update.php',
+        'update-core.php',
+    ];
+
+    private bool $fastcgiFinished = false;
+
+    /**
+     * @param (callable(): bool)|null $fastcgiFlusher
+     * @param (callable(object|resource, int, int): bool)|null $curlConfigurator
+     * @param (callable(string): (string|false))|null $envGetter
+     * @param list<string>|null $targetPages
+     */
+    public function __construct(
+        private readonly mixed $fastcgiFlusher = null,
+        private readonly mixed $curlConfigurator = null,
+        private readonly mixed $envGetter = null,
+        private readonly ?array $targetPages = null
+    ) {
+    }
+
+    public function isIpv4Enforced(): bool
+    {
+        $val = $this->getEnv('WP_PERF_FORCE_IPV4');
+        if ($val === false || $val === '') {
+            return true;
+        }
+
+        return !in_array(strtolower(trim($val)), ['false', '0', 'off', 'no'], true);
+    }
+
+    public function isFastcgiFinishEnabled(): bool
+    {
+        $val = $this->getEnv('WP_PERF_FASTCGI_FINISH');
+        if ($val === false || $val === '') {
+            return true;
+        }
+
+        return !in_array(strtolower(trim($val)), ['false', '0', 'off', 'no'], true);
+    }
+
+    public function configureCurl(mixed $handle): bool
+    {
+        if (!$this->isIpv4Enforced()) {
+            return false;
+        }
+
+        if (!is_object($handle) && !is_resource($handle)) {
+            return false;
+        }
+
+        if (is_callable($this->curlConfigurator)) {
+            return (bool) ($this->curlConfigurator)($handle, CURLOPT_IPRESOLVE, CURL_IPRESOLVE_V4);
+        }
+
+        if ($handle instanceof \CurlHandle && function_exists('curl_setopt')) {
+            return curl_setopt($handle, CURLOPT_IPRESOLVE, CURL_IPRESOLVE_V4);
+        }
+
+        return false;
+    }
+
+    public function shouldFinishFastcgi(?string $currentPage = null): bool
+    {
+        if (!$this->isFastcgiFinishEnabled()) {
+            return false;
+        }
+
+        $page = $currentPage ?? $this->resolveCurrentPage();
+        if ($page === null || $page === '') {
+            return false;
+        }
+
+        $targetPages = $this->targetPages ?? self::DEFAULT_TARGET_PAGES;
+
+        return in_array($page, $targetPages, true);
+    }
+
+    public function finishFastcgi(?string $currentPage = null): bool
+    {
+        if ($this->fastcgiFinished) {
+            return false;
+        }
+
+        if (!$this->shouldFinishFastcgi($currentPage)) {
+            return false;
+        }
+
+        $this->fastcgiFinished = true;
+
+        if (is_callable($this->fastcgiFlusher)) {
+            return (bool) ($this->fastcgiFlusher)();
+        }
+
+        if (function_exists('fastcgi_finish_request')) {
+            return fastcgi_finish_request();
+        }
+
+        return false;
+    }
+
+    /**
+     * @param mixed $upgrader
+     * @param array<string, mixed>|null $hookExtra
+     */
+    public function onUpgraderProcessComplete(mixed $upgrader = null, ?array $hookExtra = null): bool
+    {
+        if ($this->fastcgiFinished) {
+            return false;
+        }
+
+        if (!$this->isFastcgiFinishEnabled()) {
+            return false;
+        }
+
+        $this->fastcgiFinished = true;
+
+        if (is_callable($this->fastcgiFlusher)) {
+            return (bool) ($this->fastcgiFlusher)();
+        }
+
+        if (function_exists('fastcgi_finish_request')) {
+            return fastcgi_finish_request();
+        }
+
+        return false;
+    }
+
+    /**
+     * @param (callable(string, callable, int, int): void)|null $hookRegistrar
+     */
+    public function registerHooks(?callable $hookRegistrar = null): void
+    {
+        $registrar = $hookRegistrar;
+        if ($registrar === null && function_exists('add_action')) {
+            $registrar = static function (string $tag, callable $callback, int $priority = 10, int $acceptedArgs = 1): void {
+                add_action($tag, $callback, $priority, $acceptedArgs);
+            };
+        }
+
+        if ($registrar === null) {
+            return;
+        }
+
+        $registrar('http_api_curl', [$this, 'configureCurl'], 10, 1);
+        $registrar('upgrader_process_complete', [$this, 'onUpgraderProcessComplete'], 0, 2);
+        $registrar('shutdown', [$this, 'finishFastcgi'], 0, 0);
+    }
+
+    private function resolveCurrentPage(): ?string
+    {
+        $raw = $GLOBALS['pagenow'] ?? null;
+        if (is_string($raw) && trim($raw) !== '') {
+            return basename(trim($raw));
+        }
+
+        $scriptName = $_SERVER['SCRIPT_NAME'] ?? $_SERVER['PHP_SELF'] ?? null;
+        if (is_string($scriptName) && trim($scriptName) !== '') {
+            return basename(trim($scriptName));
+        }
+
+        return null;
+    }
+
+    private function getEnv(string $name): string|false
+    {
+        if (is_callable($this->envGetter)) {
+            return ($this->envGetter)($name);
+        }
+
+        return getenv($name);
+    }
+}
+
+if (function_exists('add_action')) {
+    (new WpPerformance())->registerHooks();
+}

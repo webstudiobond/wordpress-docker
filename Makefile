@@ -30,7 +30,8 @@ compose-validate:
 	mkdir -p secrets; \
 	for s in db_name db_user db_password db_root_password table_prefix \
 	         auth_key secure_auth_key logged_in_key nonce_key \
-	         auth_salt secure_auth_salt logged_in_salt nonce_salt; do \
+	         auth_salt secure_auth_salt logged_in_salt nonce_salt \
+	         smtp_host smtp_port smtp_mail smtp_password; do \
 	    touch "secrets/$${s}.txt"; \
 	done; \
 	docker compose -f docker-compose.yaml config --quiet; \

@@ -3,3 +3,5 @@ parameters:
     paths:
         - build
         - examples/data/wp-config.php.example
+        - examples/data/wp-content/mu-plugins/wp-notify.php.example
+        - examples/data/wp-content/mu-plugins/wp-performance.php.example

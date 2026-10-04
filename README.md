@@ -15,6 +15,8 @@ Production-ready, fully decoupled, and resource-efficient containerized WordPres
 * **Zero-Privilege Security Profile:** Read-only root filesystems, all Linux capabilities dropped (`cap_drop: [ALL]`) with none added back (`cap_add: []`), privilege escalation blocked (`no-new-privileges`), running as a dedicated unprivileged host user.
 * **Atomic Version Upgrades:** An automated pre-flight init service compares `wp-includes/version.php` between the image donor and the live site. On version mismatch it atomically replaces `wp-admin/`, `wp-includes/`, and root PHP files without ever touching `wp-content/` or user data.
 * **Strict Docker Secrets:** All sensitive data — database credentials, database name, table prefix, and all eight authentication keys and salts — are loaded exclusively from secret files. No plaintext credentials in environment variables, `.env`, or Compose manifests. Missing or empty secrets cause an immediate fatal error, preventing the application from starting.
+* **Zero-Secret Mail & Push Notifications:** Transactional mail (`wp_mail()`) is intercepted by a lightweight must-use plugin and dispatched over an isolated UNIX domain socket to [go-notifier](https://github.com/webstudiobond/go-notifier). This eliminates the need for third-party SMTP plugins, keeping WordPress and its database free of mail server credentials and API tokens. The daemon handles authenticated SMTP relay via Docker Secrets and supports multi-channel push alerting (Telegram, Matrix, ntfy) with subject regex routing and rate limiting.
+* **Non-Blocking Administration & Outbound IPv4 Enforcement:** A lightweight must-use plugin template (`wp-performance.php`) eliminates browser spinner hangs during core, plugin, and translation upgrades by triggering early FastCGI response flushing (`fastcgi_finish_request()`), and prevents connection timeout delays in this IPv4-only container stack by enforcing IPv4 resolution for outbound WordPress HTTP requests.
 
 ---
 
@@ -25,6 +27,7 @@ Production-ready, fully decoupled, and resource-efficient containerized WordPres
 ├── docker-compose.yaml              # Production deployment manifest
 ├── .env                             # Host infrastructure variables (UID, GID, image versions)
 ├── wordpress.env                    # WordPress application overrides (cron, URLs, memory, debug, etc.)
+├── notifier.env                     # Optional (go-notifier): channels, routing rules, and limits
 ├── secrets/                         # Docker secrets directory (owner-only access)
 │   ├── db_name.txt                  # Database name
 │   ├── db_user.txt                  # Database username
@@ -38,7 +41,12 @@ Production-ready, fully decoupled, and resource-efficient containerized WordPres
 │   ├── auth_salt.txt                # Authentication salt
 │   ├── secure_auth_salt.txt         # Secure authentication salt
 │   ├── logged_in_salt.txt           # Logged-in salt
-│   └── nonce_salt.txt               # Nonce salt
+│   ├── nonce_salt.txt               # Nonce salt
+│   ├── smtp_host.txt                # Optional (go-notifier): SMTP server hostname
+│   ├── smtp_port.txt                # Optional (go-notifier): SMTP port (465 or 587)
+│   ├── smtp_mail.txt                # Optional (go-notifier): SMTP username / sender email
+│   ├── smtp_password.txt            # Optional (go-notifier): SMTP password / app password
+│   └── ...                          # Optional (go-notifier): messenger secrets (telegram, etc.)
 ├── config/                          # Service configuration files
 │   ├── php/                         # PHP-FPM configuration
 │   │   ├── php-fpm.conf             # FPM master process config
@@ -60,6 +68,12 @@ Production-ready, fully decoupled, and resource-efficient containerized WordPres
 ├── .wp-cli/                         # WP-CLI packages and Composer cache directory
 └── data/                            # WordPress document root
     ├── wp-config.php                # Site configuration (from examples/data/wp-config.php.example)
+    ├── wp-content/                  # User content directory
+    │   ├── mu-plugins/              # Must-use plugins directory
+    │   │   ├── wp-notify.php        # Optional (go-notifier): intercepts wp_mail() via socket
+    │   │   └── wp-performance.php   # Optional: optimizes updates & external HTTP requests
+    │   ├── uploads/                 # Uploaded media assets
+    │   └── ...
     └── ...                          # WordPress core files (auto-populated by init service)
 ```
 
@@ -172,7 +186,120 @@ sudo -u ${SITE_USER} nano /home/${SITE_USER}/wordpress.env
 
 See [examples/wordpress.env.example](examples/wordpress.env.example) for all available overrides and the [official wp-config.php documentation](https://developer.wordpress.org/advanced-administration/wordpress/wp-config/) for detailed parameter descriptions.
 
-### 7. Memory Limits
+### 7. Mail & Push Notifications (go-notifier)
+
+The PHP-FPM container is strictly hardened (`read_only: true`, `cap_drop: [ALL]`) and does **not** contain a local mail transfer agent (MTA) such as `sendmail` or `postfix`. Standard PHP `mail()` execution is disabled. Without an email relay, WordPress cannot deliver critical administrative messages:
+* Password recovery emails for administrators and users
+* PHP fatal error Recovery Mode access links
+* Security plugin alerts (e.g. Wordfence attack warnings)
+* Contact forms and eCommerce notifications
+
+To provide high-performance, non-blocking delivery without storing plaintext SMTP passwords in the WordPress database, the stack integrates **[go-notifier](https://github.com/webstudiobond/go-notifier)** — a zero-dependency micro-daemon running in a minimal scratch container. It communicates with WordPress strictly over a local UNIX domain socket (`/var/run/sockets/notify.sock`) and loads credentials directly from Docker Secrets in memory.
+
+#### Option A: Enable go-notifier (Default & Recommended)
+
+1. **Enter SMTP server credentials:**
+   Securely enter your SMTP server hostname (e.g. `smtp.example.com`), port (`587` or `465`), sender email / username, and password using `nano` without exposing credentials in shell command history:
+   ```bash
+   sudo -u ${SITE_USER} nano /home/${SITE_USER}/secrets/smtp_host.txt
+   sudo -u ${SITE_USER} nano /home/${SITE_USER}/secrets/smtp_port.txt
+   sudo -u ${SITE_USER} nano /home/${SITE_USER}/secrets/smtp_mail.txt
+   sudo -u ${SITE_USER} nano /home/${SITE_USER}/secrets/smtp_password.txt
+   ```
+
+   *(Optional) If using Telegram, Matrix, ntfy, or custom admin alert routing, edit the corresponding secret files as needed:*
+
+   **Telegram:**
+   * `telegram_bot_token.txt` — Telegram Bot API token (e.g. `123456789:ABCdefGHIjkl...`).
+   * `telegram_chat_id.txt` — Target chat, group, or channel ID (e.g. `-1001234567890` or `123456789`).
+   ```bash
+   sudo -u ${SITE_USER} nano /home/${SITE_USER}/secrets/telegram_bot_token.txt
+   sudo -u ${SITE_USER} nano /home/${SITE_USER}/secrets/telegram_chat_id.txt
+   ```
+
+   **Matrix:**
+   * `matrix_url.txt` — Direct Client-Server API URL to the Synapse / homeserver (e.g. `https://matrix.example.com` or `https://synapse.example.com:8448`).
+     *NOTE:* `go-notifier` does not query `.well-known/matrix/client`; specify the direct homeserver endpoint, not the root organization domain. Unsure? Check `https://matrix.org/.well-known/matrix/client` and use the `base_url`.
+   * `matrix_room_id.txt` — Internal room ID (e.g. `!abcdef:matrix.example.com` or `!opaque-v12_roomid`).
+   * `matrix_access_token.txt` — Matrix bot / user access token.
+   ```bash
+   sudo -u ${SITE_USER} nano /home/${SITE_USER}/secrets/matrix_url.txt
+   sudo -u ${SITE_USER} nano /home/${SITE_USER}/secrets/matrix_room_id.txt
+   sudo -u ${SITE_USER} nano /home/${SITE_USER}/secrets/matrix_access_token.txt
+   ```
+
+   **ntfy:**
+   * `ntfy_url.txt` — ntfy server URL (e.g. `https://ntfy.sh` or `https://ntfy.example.com`).
+   * `ntfy_topic.txt` — Target topic name.
+   * `ntfy_token.txt` — Optional Bearer token for protected topics.
+   ```bash
+   sudo -u ${SITE_USER} nano /home/${SITE_USER}/secrets/ntfy_url.txt
+   sudo -u ${SITE_USER} nano /home/${SITE_USER}/secrets/ntfy_topic.txt
+   sudo -u ${SITE_USER} nano /home/${SITE_USER}/secrets/ntfy_token.txt
+   ```
+
+   **Admin Alert Recipients:**
+   * `admin_emails.txt` — Admin emails allowed to receive messenger alerts (comma/newline-separated, e.g. `admin@example.com,security@example.com`). Emails sent to other recipients (e.g. customer orders, password resets) are routed exclusively to SMTP to protect user privacy.
+   ```bash
+   sudo -u ${SITE_USER} nano /home/${SITE_USER}/secrets/admin_emails.txt
+   ```
+
+   Lock secret files with strict ownership and permissions:
+   ```bash
+   sudo chown -R ${SITE_USER}:${SITE_USER} /home/${SITE_USER}/secrets
+   sudo chmod 0700 /home/${SITE_USER}/secrets
+   sudo chmod 0400 /home/${SITE_USER}/secrets/*.txt
+   ```
+
+2. **Download and configure routing (`notifier.env`):**
+   Configure active notification channels (`NOTIFY_CHANNELS`), rate limits, and custom subject regex routing rules (`NOTIFY_RULE_<NAME>_*`). See [`examples/notifier.env.example`](examples/notifier.env.example) for detailed syntax:
+   ```bash
+   sudo -u ${SITE_USER} curl -fsSL ${REPO}/examples/notifier.env.example -o /home/${SITE_USER}/notifier.env
+   sudo -u ${SITE_USER} nano /home/${SITE_USER}/notifier.env
+   sudo chmod 0600 /home/${SITE_USER}/notifier.env
+   ```
+
+3. **Install the mu-plugin interceptor:**
+   ```bash
+   sudo -u ${SITE_USER} mkdir -p /home/${SITE_USER}/data/wp-content/mu-plugins
+   sudo -u ${SITE_USER} curl -fsSL ${REPO}/examples/data/wp-content/mu-plugins/wp-notify.php.example \
+     -o /home/${SITE_USER}/data/wp-content/mu-plugins/wp-notify.php
+   ```
+   The `wp-notify.php` must-use plugin automatically intercepts all `wp_mail()` calls and dispatches the payload to `/var/run/sockets/notify.sock`.
+
+#### Option B: Disable go-notifier (Alternative)
+
+If you plan to use an external WordPress plugin sending email via direct HTTP API (such as FluentSMTP or WP Mail SMTP connecting to AWS SES, Mailgun, SendGrid, or Postmark), or if the site does not require email delivery:
+
+1. **Edit `docker-compose.yaml`:**
+   Comment out the `notifier` service block and the 4 `smtp_*` secret definitions in the root `secrets:` section:
+   ```bash
+   sudo -u ${SITE_USER} nano /home/${SITE_USER}/docker-compose.yaml
+   ```
+2. **Do not create** `data/wp-content/mu-plugins/wp-notify.php` or `notifier.env`.
+
+### 8. Administration & Update Performance (wp-performance)
+
+To prevent admin dashboard freezing during updates and eliminate network latency on outbound HTTP requests, this repository provides an optional, lightweight must-use plugin: [`examples/data/wp-content/mu-plugins/wp-performance.php.example`](examples/data/wp-content/mu-plugins/wp-performance.php.example).
+
+It addresses two common bottlenecks in containerized WordPress deployments:
+
+1. **Instant Browser Completion on Core & Plugin Updates:** During WordPress core, plugin, and translation updates (`update.php`, `update-core.php`), WordPress finishes writing files and prints success messages, but subsequently triggers post-upgrade hooks (e.g., cache preloading by plugins such as WP Rocket, telemetry reporting, and update verifications) before terminating the request. This keeps the FastCGI connection open, causing the browser tab to hang with a loading spinner for 10–30+ seconds. `wp-performance.php` intercepts `upgrader_process_complete` and `shutdown` at priority `0` to invoke `fastcgi_finish_request()`. This immediately flushes output buffers and terminates the client HTTP connection, letting the browser finish instantly while PHP-FPM executes lingering post-processing tasks in the background.
+2. **Enforced IPv4 Resolution for Outbound Requests:** When communicating with external services (such as `api.wordpress.org`, plugin repositories, licensing servers, or webhooks) that publish IPv6 (AAAA) records, the standard PHP cURL engine attempts an IPv6 connection first, falling back to IPv4 only when IPv6 is unreachable. Because this Docker Compose stack operates exclusively on IPv4 and does not configure container IPv6 routing, forcing IPv4 eliminates unnecessary connection attempts and dual-stack lookup overhead. If your host and Docker daemon are specifically configured with working IPv6 connectivity, this behavior can be easily disabled via the environment variable in `wordpress.env`.
+
+**Installation:**
+
+```bash
+sudo -u ${SITE_USER} mkdir -p /home/${SITE_USER}/data/wp-content/mu-plugins
+sudo -u ${SITE_USER} curl -fsSL ${REPO}/examples/data/wp-content/mu-plugins/wp-performance.php.example \
+  -o /home/${SITE_USER}/data/wp-content/mu-plugins/wp-performance.php
+```
+
+Both optimizations are enabled by default once the plugin is copied. You can adjust behavior in `wordpress.env` without code changes:
+* `WP_PERF_FASTCGI_FINISH=true` — controls early FastCGI connection termination on update pages (set to `false`, `0`, or `off` to disable).
+* `WP_PERF_FORCE_IPV4=true` — controls IPv4 resolution enforcement for outbound cURL requests (defaults to `true`; set to `false`, `0`, or `off` if your Docker environment has native IPv6 networking enabled).
+
+### 9. Memory Limits
 
 If you need to change PHP memory limits, they must be adjusted **consistently** across three places:
 
@@ -180,7 +307,7 @@ If you need to change PHP memory limits, they must be adjusted **consistently** 
 2. `docker-compose.yaml` — `mem_limit` for the `wordpress` service
 3. `config/php/www.conf` — FPM pool memory-related directives
 
-### 8. Set Permissions
+### 10. Set Permissions
 
 After all directories, configurations, and secrets have been created and edited, set ownership to the site user across the entire directory and apply strict permissions:
 
@@ -190,9 +317,10 @@ sudo chmod 0700 /home/${SITE_USER}/secrets
 sudo chmod 0400 /home/${SITE_USER}/secrets/*.txt
 sudo chmod 0600 /home/${SITE_USER}/.env
 sudo chmod 0600 /home/${SITE_USER}/wordpress.env
+[ -f /home/${SITE_USER}/notifier.env ] && sudo chmod 0600 /home/${SITE_USER}/notifier.env
 ```
 
-### 9. Start the Stack
+### 11. Start the Stack
 
 Pull images and start:
 
@@ -724,6 +852,8 @@ Build the CLI image (it is under the `tools` profile):
 docker compose -f docker-compose.dev.yaml --profile tools build wp-cli
 ```
 
+> NOTE: In `docker-compose.dev.yaml`, the `notifier` service and its SMTP secrets are commented out by default so that local development environments can run without configuring mail credentials. If you wish to test notifications locally (e.g. using Mailpit or an external SMTP relay), uncomment the `notifier` service and `smtp_*` secrets in `docker-compose.dev.yaml` and provide the corresponding secret files.
+
 ### Code Quality Checks
 
 Ensure PHP 8.5, PHPStan, and PHP_CodeSniffer are installed, then run:
@@ -741,3 +871,10 @@ All checks must pass with zero errors:
 For pull requests, CI additionally runs **Hadolint** (Dockerfile linting), **Docker Compose** config validation, and **Trivy** filesystem vulnerability scanning — see [ci.yml](.github/workflows/ci.yml).
 
 </details>
+
+---
+
+## License & Attribution
+
+* This repository and deployment architecture are licensed under the [MIT License](LICENSE).
+* **WordPress License & Ownership:** WordPress is free, open-source software licensed under the [GNU General Public License v2 or later (GPLv2+)](https://github.com/WordPress/WordPress?tab=License-1-ov-file) and belongs to [WordPress](https://github.com/WordPress) and the WordPress Foundation. This project is an independent containerized deployment architecture and is not affiliated with, endorsed, or sponsored by WordPress or the WordPress Foundation.

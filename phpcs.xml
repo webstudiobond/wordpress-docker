@@ -4,6 +4,9 @@
 
     <file>build</file>
     <file>tests</file>
+    <file>examples/data/wp-config.php.example</file>
+    <file>examples/data/wp-content/mu-plugins/wp-notify.php.example</file>
+    <file>examples/data/wp-content/mu-plugins/wp-performance.php.example</file>
 
     <arg name="colors"/>
     <arg value="sp"/>
