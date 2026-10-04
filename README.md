@@ -874,7 +874,12 @@ For pull requests, CI additionally runs **Hadolint** (Dockerfile linting), **Doc
 
 ---
 
+<details>
+<summary><strong>License & Attribution</strong></summary>
+
 ## License & Attribution
 
 * This repository and deployment architecture are licensed under the [MIT License](LICENSE).
 * **WordPress License & Ownership:** WordPress is free, open-source software licensed under the [GNU General Public License v2 or later (GPLv2+)](https://github.com/WordPress/WordPress?tab=License-1-ov-file) and belongs to [WordPress](https://github.com/WordPress) and the WordPress Foundation. This project is an independent containerized deployment architecture and is not affiliated with, endorsed, or sponsored by WordPress or the WordPress Foundation.
+
+</details>
