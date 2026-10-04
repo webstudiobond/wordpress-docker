@@ -288,7 +288,7 @@ services:
       - path: ./notifier.env
         required: false
     environment:
-      SITE_NAME: "${SITE_NAME:-${SITE_USER}}"
+      SITE_USER: "${SITE_USER}"
     secrets:
       - smtp_host
       - smtp_port
