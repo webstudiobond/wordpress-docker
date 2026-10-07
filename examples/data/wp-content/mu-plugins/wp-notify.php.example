@@ -193,7 +193,7 @@ final class WpNotifyMailer
             return trim($envSocket);
         }
 
-        return '/var/run/sockets/notify.sock';
+        return '/var/run/sockets/notify/notify.sock';
     }
 
     private function executeCurl(string $socketPath, string $jsonData): bool

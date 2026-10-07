@@ -61,9 +61,9 @@ RUN set -eux; \
         done; \
     fi; \
     find / -perm /6000 -type f -exec chmod a-s {} + 2>/dev/null || true; \
-    mkdir -p /var/run/sockets /var/www/html /var/www/tmp /run/php; \
+    mkdir -p /var/run/sockets/mysql /var/run/sockets/valkey /var/run/sockets/php /var/run/sockets/notify /var/www/html /var/www/tmp /run/php; \
     chmod 1777 /var/www/tmp /run/php; \
-    chmod 0700 /var/run/sockets; \
+    chmod -R 0700 /var/run/sockets; \
     sed -i 's|^error_log = .*|error_log = /proc/self/fd/2|' /etc/php/*/fpm/php-fpm.conf 2>/dev/null || true; \
     sed -i 's|^pid = .*|pid = /tmp/php-fpm.pid|' /etc/php/*/fpm/php-fpm.conf 2>/dev/null || true; \
     find /etc/php -mindepth 1 -maxdepth 1 -type d -exec ln -s {} /etc/php/current \; 2>/dev/null || true; \
@@ -99,6 +99,6 @@ RUN rm -f /bin/sh /bin/dash /bin/bash /usr/bin/sh /usr/bin/dash /usr/bin/bash
 STOPSIGNAL SIGQUIT
 
 HEALTHCHECK --interval=10s --timeout=3s --start-period=5s --retries=3 \
-    CMD ["/usr/bin/env", "SCRIPT_NAME=/ping", "SCRIPT_FILENAME=/ping", "REQUEST_METHOD=GET", "cgi-fcgi", "-bind", "-connect", "/var/run/sockets/php-fpm.sock"]
+    CMD ["/usr/bin/env", "SCRIPT_NAME=/ping", "SCRIPT_FILENAME=/ping", "REQUEST_METHOD=GET", "cgi-fcgi", "-bind", "-connect", "/var/run/sockets/php/php-fpm.sock"]
 
 ENTRYPOINT ["php-fpm", "-F"]

@@ -11,7 +11,7 @@ Production-ready, fully decoupled, and resource-efficient containerized WordPres
 ## Architecture Highlights
 
 * **Shell-less FPM Runtime:** Web container has all shell binaries completely removed. Zero capability to spawn shell processes, even in the event of an arbitrary code execution exploit.
-* **Pure UNIX Domain Socket IPC:** Zero exposed TCP network ports for MariaDB, Valkey, and PHP-FPM. All inter-service communication goes through a high-performance in-memory tmpfs socket directory accessible only to the container user.
+* **Pure UNIX Domain Socket IPC:** Zero exposed TCP network ports for MariaDB, Valkey, PHP-FPM, and go-notifier. All inter-service communication goes through dedicated, isolated in-memory tmpfs socket volumes (`sockets_mysql`, `sockets_valkey`, `sockets_php`, `sockets_notify`) accessible strictly to the required container pairs.
 * **Zero-Privilege Security Profile:** Read-only root filesystems, all Linux capabilities dropped (`cap_drop: [ALL]`) with none added back (`cap_add: []`), privilege escalation blocked (`no-new-privileges`), running as a dedicated unprivileged host user.
 * **Atomic Version Upgrades:** An automated pre-flight init service compares `wp-includes/version.php` between the image donor and the live site. On version mismatch it atomically replaces `wp-admin/`, `wp-includes/`, and root PHP files without ever touching `wp-content/` or user data.
 * **Strict Docker Secrets:** All sensitive data — database credentials, database name, table prefix, and all eight authentication keys and salts — are loaded exclusively from secret files. No plaintext credentials in environment variables, `.env`, or Compose manifests. Missing or empty secrets cause an immediate fatal error, preventing the application from starting.
@@ -28,7 +28,7 @@ Production-ready, fully decoupled, and resource-efficient containerized WordPres
 ├── .env                             # Host infrastructure variables (UID, GID, image versions)
 ├── wordpress.env                    # WordPress application overrides (cron, URLs, memory, debug, etc.)
 ├── notifier.env                     # Optional (go-notifier): channels, routing rules, and limits
-├── secrets/                         # Docker secrets directory (owner-only access)
+├── secrets/                         # Docker secrets directory (read-only group access)
 │   ├── db_name.txt                  # Database name
 │   ├── db_user.txt                  # Database username
 │   ├── db_password.txt              # Database password
@@ -105,8 +105,11 @@ sudo useradd -m -d /home/${SITE_USER} -s /usr/sbin/nologin ${SITE_USER}
 ### 2. Create Directory Structure
 
 ```bash
-sudo -u ${SITE_USER} mkdir -p /home/${SITE_USER}/{.wp-cli,data/wp-content/uploads,mariadb,mariadb-backup,tmp,secrets,config/{angie/conf.d,mysql,php,valkey}}
-sudo chmod 0700 /home/${SITE_USER}/secrets
+sudo -u ${SITE_USER} mkdir -p /home/${SITE_USER}/{.wp-cli,data/wp-content/uploads,mariadb,tmp}
+sudo mkdir -p /home/${SITE_USER}/{mariadb-backup,secrets,config/{angie/conf.d,mysql,php,valkey}}
+sudo chown -R root:${SITE_USER} /home/${SITE_USER}/{config,secrets}
+sudo chmod -R 0750 /home/${SITE_USER}/{config,secrets}
+sudo chmod 0700 /home/${SITE_USER}/{.wp-cli,data,mariadb,mariadb-backup,tmp}
 ```
 
 ### 3. Generate Secrets
@@ -140,7 +143,8 @@ done
 **Lock secret files:**
 
 ```bash
-sudo chmod 0400 /home/${SITE_USER}/secrets/*.txt
+sudo chown root:${SITE_USER} /home/${SITE_USER}/secrets/*.txt
+sudo chmod 0440 /home/${SITE_USER}/secrets/*.txt
 ```
 
 ### 4. Download Configuration Files
@@ -148,23 +152,27 @@ sudo chmod 0400 /home/${SITE_USER}/secrets/*.txt
 ```bash
 REPO="https://raw.githubusercontent.com/webstudiobond/wordpress-docker/main"
 
-sudo -u ${SITE_USER} curl -fsSL ${REPO}/config/php/php-fpm.conf -o /home/${SITE_USER}/config/php/php-fpm.conf
-sudo -u ${SITE_USER} curl -fsSL ${REPO}/config/php/php.ini -o /home/${SITE_USER}/config/php/php.ini
-sudo -u ${SITE_USER} curl -fsSL ${REPO}/config/php/opcache.ini -o /home/${SITE_USER}/config/php/opcache.ini
-sudo -u ${SITE_USER} curl -fsSL ${REPO}/config/php/www.conf -o /home/${SITE_USER}/config/php/www.conf
-sudo -u ${SITE_USER} curl -fsSL ${REPO}/config/mysql/my.cnf -o /home/${SITE_USER}/config/mysql/my.cnf
-sudo -u ${SITE_USER} curl -fsSL ${REPO}/config/valkey/valkey.conf -o /home/${SITE_USER}/config/valkey/valkey.conf
-sudo -u ${SITE_USER} curl -fsSL ${REPO}/config/angie/angie.conf -o /home/${SITE_USER}/config/angie/angie.conf
-sudo -u ${SITE_USER} curl -fsSL ${REPO}/config/angie/mime.types -o /home/${SITE_USER}/config/angie/mime.types
-sudo -u ${SITE_USER} curl -fsSL ${REPO}/config/angie/modules.conf -o /home/${SITE_USER}/config/angie/modules.conf
+sudo curl -fsSL ${REPO}/config/php/php-fpm.conf -o /home/${SITE_USER}/config/php/php-fpm.conf
+sudo curl -fsSL ${REPO}/config/php/php.ini -o /home/${SITE_USER}/config/php/php.ini
+sudo curl -fsSL ${REPO}/config/php/opcache.ini -o /home/${SITE_USER}/config/php/opcache.ini
+sudo curl -fsSL ${REPO}/config/php/www.conf -o /home/${SITE_USER}/config/php/www.conf
+sudo curl -fsSL ${REPO}/config/mysql/my.cnf -o /home/${SITE_USER}/config/mysql/my.cnf
+sudo curl -fsSL ${REPO}/config/valkey/valkey.conf -o /home/${SITE_USER}/config/valkey/valkey.conf
+sudo curl -fsSL ${REPO}/config/angie/angie.conf -o /home/${SITE_USER}/config/angie/angie.conf
+sudo curl -fsSL ${REPO}/config/angie/mime.types -o /home/${SITE_USER}/config/angie/mime.types
+sudo curl -fsSL ${REPO}/config/angie/modules.conf -o /home/${SITE_USER}/config/angie/modules.conf
+
+sudo chown -R root:${SITE_USER} /home/${SITE_USER}/config
+sudo find /home/${SITE_USER}/config -type f -exec chmod 0640 {} +
 ```
 
 ### 5. Download Compose Manifest and Application Config
 
 ```bash
-sudo -u ${SITE_USER} curl -fsSL ${REPO}/docker-compose.yaml -o /home/${SITE_USER}/docker-compose.yaml
-sudo -u ${SITE_USER} curl -fsSL ${REPO}/examples/.env.example -o /home/${SITE_USER}/.env
-sudo -u ${SITE_USER} curl -fsSL ${REPO}/examples/wordpress.env.example -o /home/${SITE_USER}/wordpress.env
+sudo curl -fsSL ${REPO}/docker-compose.yaml -o /home/${SITE_USER}/docker-compose.yaml
+sudo curl -fsSL ${REPO}/examples/.env.example -o /home/${SITE_USER}/.env
+sudo curl -fsSL ${REPO}/examples/wordpress.env.example -o /home/${SITE_USER}/wordpress.env
+sudo chmod 0600 /home/${SITE_USER}/{docker-compose.yaml,.env,wordpress.env}
 sudo -u ${SITE_USER} curl -fsSL ${REPO}/examples/data/wp-config.php.example -o /home/${SITE_USER}/data/wp-config.php
 ```
 
@@ -173,7 +181,7 @@ sudo -u ${SITE_USER} curl -fsSL ${REPO}/examples/data/wp-config.php.example -o /
 Edit `.env` to set the site user and UID/GID matching the system account created in Step 1 (check with `id ${SITE_USER}`):
 
 ```bash
-sudo -u ${SITE_USER} nano /home/${SITE_USER}/.env
+sudo nano /home/${SITE_USER}/.env
 ```
 
 See [examples/.env.example](examples/.env.example) for all available variables.
@@ -181,7 +189,7 @@ See [examples/.env.example](examples/.env.example) for all available variables.
 Most WordPress application settings (cron, memory limits, URLs, debug mode, etc.) can be tuned in `wordpress.env` without editing `wp-config.php`:
 
 ```bash
-sudo -u ${SITE_USER} nano /home/${SITE_USER}/wordpress.env
+sudo nano /home/${SITE_USER}/wordpress.env
 ```
 
 See [examples/wordpress.env.example](examples/wordpress.env.example) for all available overrides and the [official wp-config.php documentation](https://developer.wordpress.org/advanced-administration/wordpress/wp-config/) for detailed parameter descriptions.
@@ -194,17 +202,17 @@ The PHP-FPM container is strictly hardened (`read_only: true`, `cap_drop: [ALL]`
 * Security plugin alerts (e.g. Wordfence attack warnings)
 * Contact forms and eCommerce notifications
 
-To provide high-performance, non-blocking delivery without storing plaintext SMTP passwords in the WordPress database, the stack integrates **[go-notifier](https://github.com/webstudiobond/go-notifier)** — a zero-dependency micro-daemon running in a minimal scratch container. It communicates with WordPress strictly over a local UNIX domain socket (`/var/run/sockets/notify.sock`) and loads credentials directly from Docker Secrets in memory.
+To provide high-performance, non-blocking delivery without storing plaintext SMTP passwords in the WordPress database, the stack integrates **[go-notifier](https://github.com/webstudiobond/go-notifier)** — a zero-dependency micro-daemon running in a minimal scratch container. It communicates with WordPress strictly over a local UNIX domain socket (`/var/run/sockets/notify/notify.sock`) and loads credentials directly from Docker Secrets in memory.
 
 #### Option A: Enable go-notifier (Default & Recommended)
 
 1. **Enter SMTP server credentials:**
    Securely enter your SMTP server hostname (e.g. `smtp.example.com`), port (`587` or `465`), sender email / username, and password using `nano` without exposing credentials in shell command history:
    ```bash
-   sudo -u ${SITE_USER} nano /home/${SITE_USER}/secrets/smtp_host.txt
-   sudo -u ${SITE_USER} nano /home/${SITE_USER}/secrets/smtp_port.txt
-   sudo -u ${SITE_USER} nano /home/${SITE_USER}/secrets/smtp_mail.txt
-   sudo -u ${SITE_USER} nano /home/${SITE_USER}/secrets/smtp_password.txt
+   sudo nano /home/${SITE_USER}/secrets/smtp_host.txt
+   sudo nano /home/${SITE_USER}/secrets/smtp_port.txt
+   sudo nano /home/${SITE_USER}/secrets/smtp_mail.txt
+   sudo nano /home/${SITE_USER}/secrets/smtp_password.txt
    ```
 
    *(Optional) If using Telegram, Matrix, ntfy, or custom admin alert routing, edit the corresponding secret files as needed:*
@@ -213,8 +221,8 @@ To provide high-performance, non-blocking delivery without storing plaintext SMT
    * `telegram_bot_token.txt` — Telegram Bot API token (e.g. `123456789:ABCdefGHIjkl...`).
    * `telegram_chat_id.txt` — Target chat, group, or channel ID (e.g. `-1001234567890` or `123456789`).
    ```bash
-   sudo -u ${SITE_USER} nano /home/${SITE_USER}/secrets/telegram_bot_token.txt
-   sudo -u ${SITE_USER} nano /home/${SITE_USER}/secrets/telegram_chat_id.txt
+   sudo nano /home/${SITE_USER}/secrets/telegram_bot_token.txt
+   sudo nano /home/${SITE_USER}/secrets/telegram_chat_id.txt
    ```
 
    **Matrix:**
@@ -223,9 +231,9 @@ To provide high-performance, non-blocking delivery without storing plaintext SMT
    * `matrix_room_id.txt` — Internal room ID (e.g. `!abcdef:matrix.example.com` or `!opaque-v12_roomid`).
    * `matrix_access_token.txt` — Matrix bot / user access token.
    ```bash
-   sudo -u ${SITE_USER} nano /home/${SITE_USER}/secrets/matrix_url.txt
-   sudo -u ${SITE_USER} nano /home/${SITE_USER}/secrets/matrix_room_id.txt
-   sudo -u ${SITE_USER} nano /home/${SITE_USER}/secrets/matrix_access_token.txt
+   sudo nano /home/${SITE_USER}/secrets/matrix_url.txt
+   sudo nano /home/${SITE_USER}/secrets/matrix_room_id.txt
+   sudo nano /home/${SITE_USER}/secrets/matrix_access_token.txt
    ```
 
    **ntfy:**
@@ -233,29 +241,29 @@ To provide high-performance, non-blocking delivery without storing plaintext SMT
    * `ntfy_topic.txt` — Target topic name.
    * `ntfy_token.txt` — Optional Bearer token for protected topics.
    ```bash
-   sudo -u ${SITE_USER} nano /home/${SITE_USER}/secrets/ntfy_url.txt
-   sudo -u ${SITE_USER} nano /home/${SITE_USER}/secrets/ntfy_topic.txt
-   sudo -u ${SITE_USER} nano /home/${SITE_USER}/secrets/ntfy_token.txt
+   sudo nano /home/${SITE_USER}/secrets/ntfy_url.txt
+   sudo nano /home/${SITE_USER}/secrets/ntfy_topic.txt
+   sudo nano /home/${SITE_USER}/secrets/ntfy_token.txt
    ```
 
    **Admin Alert Recipients:**
    * `admin_emails.txt` — Admin emails allowed to receive messenger alerts (comma/newline-separated, e.g. `admin@example.com,security@example.com`). Emails sent to other recipients (e.g. customer orders, password resets) are routed exclusively to SMTP to protect user privacy.
    ```bash
-   sudo -u ${SITE_USER} nano /home/${SITE_USER}/secrets/admin_emails.txt
+   sudo nano /home/${SITE_USER}/secrets/admin_emails.txt
    ```
 
    Lock secret files with strict ownership and permissions:
    ```bash
-   sudo chown -R ${SITE_USER}:${SITE_USER} /home/${SITE_USER}/secrets
-   sudo chmod 0700 /home/${SITE_USER}/secrets
-   sudo chmod 0400 /home/${SITE_USER}/secrets/*.txt
+   sudo chown -R root:${SITE_USER} /home/${SITE_USER}/secrets
+   sudo chmod 0750 /home/${SITE_USER}/secrets
+   sudo chmod 0440 /home/${SITE_USER}/secrets/*.txt
    ```
 
 2. **Download and configure routing (`notifier.env`):**
    Configure active notification channels (`NOTIFY_CHANNELS`), rate limits, and custom subject regex routing rules (`NOTIFY_RULE_<NAME>_*`). See [`examples/notifier.env.example`](examples/notifier.env.example) for detailed syntax:
    ```bash
-   sudo -u ${SITE_USER} curl -fsSL ${REPO}/examples/notifier.env.example -o /home/${SITE_USER}/notifier.env
-   sudo -u ${SITE_USER} nano /home/${SITE_USER}/notifier.env
+   sudo curl -fsSL ${REPO}/examples/notifier.env.example -o /home/${SITE_USER}/notifier.env
+   sudo nano /home/${SITE_USER}/notifier.env
    sudo chmod 0600 /home/${SITE_USER}/notifier.env
    ```
 
@@ -265,16 +273,16 @@ To provide high-performance, non-blocking delivery without storing plaintext SMT
    sudo -u ${SITE_USER} curl -fsSL ${REPO}/examples/data/wp-content/mu-plugins/wp-notify.php.example \
      -o /home/${SITE_USER}/data/wp-content/mu-plugins/wp-notify.php
    ```
-   The `wp-notify.php` must-use plugin automatically intercepts all `wp_mail()` calls and dispatches the payload to `/var/run/sockets/notify.sock`.
+   The `wp-notify.php` must-use plugin automatically intercepts all `wp_mail()` calls and dispatches the payload to `/var/run/sockets/notify/notify.sock`.
 
 #### Option B: Disable go-notifier (Alternative)
 
 If you plan to use an external WordPress plugin sending email via direct HTTP API (such as FluentSMTP or WP Mail SMTP connecting to AWS SES, Mailgun, SendGrid, or Postmark), or if the site does not require email delivery:
 
 1. **Edit `docker-compose.yaml`:**
-   Comment out the `notifier` service block and the 4 `smtp_*` secret definitions in the root `secrets:` section:
+   Comment out the `notifier` service block, the `sockets_notify` volume mounts in `wordpress` and `wp-cli`, the `sockets_notify` definition in `volumes:`, and the 4 `smtp_*` secret definitions in the root `secrets:` section:
    ```bash
-   sudo -u ${SITE_USER} nano /home/${SITE_USER}/docker-compose.yaml
+   sudo nano /home/${SITE_USER}/docker-compose.yaml
    ```
 2. **Do not create** `data/wp-content/mu-plugins/wp-notify.php` or `notifier.env`.
 
@@ -307,20 +315,7 @@ If you need to change PHP memory limits, they must be adjusted **consistently** 
 2. `docker-compose.yaml` — `mem_limit` for the `wordpress` service
 3. `config/php/www.conf` — FPM pool memory-related directives
 
-### 10. Set Permissions
-
-After all directories, configurations, and secrets have been created and edited, set ownership to the site user across the entire directory and apply strict permissions:
-
-```bash
-sudo chown -R ${SITE_USER}:${SITE_USER} /home/${SITE_USER}
-sudo chmod 0700 /home/${SITE_USER}/secrets
-sudo chmod 0400 /home/${SITE_USER}/secrets/*.txt
-sudo chmod 0600 /home/${SITE_USER}/.env
-sudo chmod 0600 /home/${SITE_USER}/wordpress.env
-[ -f /home/${SITE_USER}/notifier.env ] && sudo chmod 0600 /home/${SITE_USER}/notifier.env
-```
-
-### 11. Start the Stack
+### 10. Start the Stack
 
 Pull images and start:
 
@@ -350,13 +345,62 @@ docker compose -f /home/${SITE_USER}/docker-compose.yaml down
 ---
 
 <details>
+<summary><strong>Permissions &amp; Ownership</strong></summary>
+
+## Host Permissions & Privilege Separation
+
+The stack enforces strict host-level privilege separation across three ownership tiers so that even in the event of a container compromise (`${SITE_USER}`), the process cannot modify deployment manifests, service configurations, or secret files:
+
+* **`root:root` (Host-Only Manifests & Backups):**
+  * `docker-compose.yaml`, `.env`, `wordpress.env`, `notifier.env` — `0600`
+  * `mariadb-backup/` — `0700`
+* **`root:${SITE_USER}` (Read-Only Service Configs & Secrets):**
+  * `config/` — directories `0750`, files `0640` (mounted `:ro` into containers)
+  * `secrets/` — directory `0750`, secret files `0440` (containers have group read-only access and cannot `chmod` or overwrite files)
+* **`${SITE_USER}:${SITE_USER}` (Runtime Writable Storage):**
+  * `.wp-cli/`, `mariadb/`, `tmp/` — `0700`
+  * `data/` — top-level directory `0700`, internal directories `0755`, internal files `0644`
+
+### One-Shot Permission Reset (Running Stack)
+
+Use this self-contained block to apply or restore canonical ownership and permissions on an existing or migrated installation without stopping the stack:
+
+```bash
+SITE_USER=mysite
+
+# 1. Host-only manifests & backups (root:root)
+sudo chown root:root /home/${SITE_USER}/docker-compose.yaml /home/${SITE_USER}/.env /home/${SITE_USER}/wordpress.env
+sudo chmod 0600 /home/${SITE_USER}/docker-compose.yaml /home/${SITE_USER}/.env /home/${SITE_USER}/wordpress.env
+[ -f /home/${SITE_USER}/notifier.env ] && sudo chown root:root /home/${SITE_USER}/notifier.env && sudo chmod 0600 /home/${SITE_USER}/notifier.env
+sudo chown -R root:root /home/${SITE_USER}/mariadb-backup
+sudo chmod 0700 /home/${SITE_USER}/mariadb-backup
+
+# 2. Read-only service configs & secrets (root:${SITE_USER})
+sudo chown -R root:${SITE_USER} /home/${SITE_USER}/{config,secrets}
+sudo find /home/${SITE_USER}/config -type d -exec chmod 0750 {} +
+sudo find /home/${SITE_USER}/config -type f -exec chmod 0640 {} +
+sudo chmod 0750 /home/${SITE_USER}/secrets
+sudo chmod 0440 /home/${SITE_USER}/secrets/*.txt
+
+# 3. Runtime writable directories & WordPress files (${SITE_USER}:${SITE_USER})
+sudo chown -R ${SITE_USER}:${SITE_USER} /home/${SITE_USER}/{.wp-cli,data,mariadb,tmp}
+sudo chmod 0700 /home/${SITE_USER}/{.wp-cli,data,mariadb,tmp}
+sudo find /home/${SITE_USER}/data -mindepth 1 -type d -exec chmod 0755 {} +
+sudo find /home/${SITE_USER}/data -type f -exec chmod 0644 {} +
+```
+
+</details>
+
+---
+
+<details>
 <summary><strong>External Angie</strong></summary>
 
 ## Edge Reverse Proxy (External Angie)
 
 Each site stack includes an internal Angie container that handles FastCGI routing to PHP-FPM via the UNIX socket. It does **not** publish any ports on the host. An external Edge Angie instance running on the host acts as the hardened perimeter gateway: it terminates TLS, manages automated certificates, enforces perimeter security, and forwards incoming traffic to the internal site containers.
 
-The external Edge Angie operates in the **`frontend_gateway`** network (`172.20.0.0/16`). All WordPress site stacks connect their internal Angie container (`${SITE_USER}_angie`) to this network, allowing Edge Angie to route requests directly by container name.
+The external Edge Angie operates at a dedicated static IP (`172.20.0.2`) inside the **`frontend_gateway`** network (`172.20.0.0/16`). All WordPress site stacks connect their internal Angie container (`${SITE_USER}_angie`) to this network, allowing Edge Angie to route requests directly by container name while internal Angie instances strictly verify `$realip_remote_addr` to accept `X-Forwarded-For` headers and HTTP connections exclusively from `172.20.0.2` (blocking lateral traffic from any other container in the shared subnet).
 
 A complete, production-hardened, and optimized Edge reverse proxy deployment with a security-by-default architecture is available in the **[angie-docker-compose](https://github.com/webstudiobond/angie-docker-compose)** repository.
 
@@ -588,7 +632,7 @@ WordPress by default uses a virtual cron (`wp-cron.php`) that runs asynchronousl
 Set `WORDPRESS_DISABLE_CRON=true` in `/home/${SITE_USER}/wordpress.env`:
 
 ```bash
-sudo -u ${SITE_USER} nano /home/${SITE_USER}/wordpress.env
+sudo nano /home/${SITE_USER}/wordpress.env
 ```
 
 ```ini
@@ -611,7 +655,7 @@ Configuration examples ([full example](examples/etc/cron.d/wordpress-mysite.exam
 
 **Automated database backup (every 6 hours, keeps backups for 7 days):**
 ```cron
-0 */6 * * * root docker compose -f /home/mysite/docker-compose.yaml run --rm wp-cli db export --single-transaction --quick - | zstd -q > /home/mysite/mariadb-backup/db_backup_$(date +\%Y\%m\%d_\%H\%M\%S).sql.zst && find /home/mysite/mariadb-backup -type f -name "*.sql.zst" -mtime +7 -delete && chown -R mysite:mysite /home/mysite/mariadb-backup
+0 */6 * * * root docker compose -f /home/mysite/docker-compose.yaml run --rm wp-cli db export --single-transaction --quick - | zstd -q > /home/mysite/mariadb-backup/db_backup_$(date +\%Y\%m\%d_\%H\%M\%S).sql.zst && find /home/mysite/mariadb-backup -type f -name "*.sql.zst" -mtime +7 -delete
 ```
 > NOTE:
 > The automated backup job requires `zstd` installed on the host (`sudo apt update && sudo apt install -y zstd`).
@@ -684,15 +728,85 @@ mariadb-dump -uroot --single-transaction --quick wp_db_name > site.sql
 # (On older MySQL hosts, use mysqldump instead of mariadb-dump)
 ```
 
-Transfer `wordpress-files.tar.gz` to `/home/${SITE_USER}/` and the SQL dump `site.sql` into `/home/${SITE_USER}/mariadb-backup/` (e.g. via `scp`/`rsync`).
-
 ### 3. On the new host — prepare deployment and secrets
 
-Follow [Deployment & Setup](#deployment--setup) (steps 1–6) to create `${SITE_USER}`, directories, configuration files, and `.env`.
+Provision the host user, directories, secrets, and configuration files in a single pass (see [Deployment & Setup](#deployment--setup) for detailed descriptions of each setting, optional messenger channels, and `go-notifier` alternatives):
 
-When generating secrets (step 3), **`table_prefix.txt` MUST match the old site's `$table_prefix`** from the old `wp-config.php` so WordPress recognizes the imported tables.
+```bash
+SITE_USER=mysite
+REPO="https://raw.githubusercontent.com/webstudiobond/wordpress-docker/main"
 
-Review your old `wp-config.php` and transfer any plugin or theme-specific constants (such as `WP_REDIS_CONFIG`, license keys, SMTP options, or security constants) into the new `/home/${SITE_USER}/data/wp-config.php` (or into `wordpress.env` for environment-driven variables).
+# 1. Create system user and directory structure
+sudo useradd -m -d /home/${SITE_USER} -s /usr/sbin/nologin ${SITE_USER}
+sudo -u ${SITE_USER} mkdir -p /home/${SITE_USER}/{.wp-cli,data/wp-content/{mu-plugins,uploads},mariadb,tmp}
+sudo mkdir -p /home/${SITE_USER}/{mariadb-backup,secrets,config/{angie/conf.d,mysql,php,valkey}}
+sudo chown -R root:${SITE_USER} /home/${SITE_USER}/{config,secrets}
+sudo chmod -R 0750 /home/${SITE_USER}/{config,secrets}
+sudo chmod 0700 /home/${SITE_USER}/{.wp-cli,data,mariadb,mariadb-backup,tmp}
+
+# 2. Generate database credentials and authentication salts
+sudo apt update && sudo apt install -y pwgen openssl zstd
+printf "db_%s" "$(pwgen -s -A 6 1)" | sudo tee /home/${SITE_USER}/secrets/db_name.txt > /dev/null
+printf "u_%s" "$(pwgen -s -A 6 1)" | sudo tee /home/${SITE_USER}/secrets/db_user.txt > /dev/null
+pwgen -s 64 1 | tr -d '\n' | sudo tee /home/${SITE_USER}/secrets/db_password.txt > /dev/null
+pwgen -s 64 1 | tr -d '\n' | sudo tee /home/${SITE_USER}/secrets/db_root_password.txt > /dev/null
+for s in auth_key secure_auth_key logged_in_key nonce_key auth_salt secure_auth_salt logged_in_salt nonce_salt; do
+  openssl rand -base64 48 | sudo tee /home/${SITE_USER}/secrets/${s}.txt > /dev/null
+done
+```
+
+Set **`table_prefix.txt` to match the old site's `$table_prefix`** from the old `wp-config.php` so WordPress recognizes the imported tables, and enter SMTP credentials for `go-notifier`:
+
+```bash
+sudo nano /home/${SITE_USER}/secrets/table_prefix.txt
+sudo nano /home/${SITE_USER}/secrets/smtp_host.txt
+sudo nano /home/${SITE_USER}/secrets/smtp_port.txt
+sudo nano /home/${SITE_USER}/secrets/smtp_mail.txt
+sudo nano /home/${SITE_USER}/secrets/smtp_password.txt
+
+sudo chown -R root:${SITE_USER} /home/${SITE_USER}/secrets
+sudo chmod 0750 /home/${SITE_USER}/secrets
+sudo chmod 0440 /home/${SITE_USER}/secrets/*.txt
+```
+
+Download service configurations, Compose manifest, environment files, and mu-plugins:
+
+```bash
+sudo curl -fsSL ${REPO}/config/php/php-fpm.conf -o /home/${SITE_USER}/config/php/php-fpm.conf
+sudo curl -fsSL ${REPO}/config/php/php.ini -o /home/${SITE_USER}/config/php/php.ini
+sudo curl -fsSL ${REPO}/config/php/opcache.ini -o /home/${SITE_USER}/config/php/opcache.ini
+sudo curl -fsSL ${REPO}/config/php/www.conf -o /home/${SITE_USER}/config/php/www.conf
+sudo curl -fsSL ${REPO}/config/mysql/my.cnf -o /home/${SITE_USER}/config/mysql/my.cnf
+sudo curl -fsSL ${REPO}/config/valkey/valkey.conf -o /home/${SITE_USER}/config/valkey/valkey.conf
+sudo curl -fsSL ${REPO}/config/angie/angie.conf -o /home/${SITE_USER}/config/angie/angie.conf
+sudo curl -fsSL ${REPO}/config/angie/mime.types -o /home/${SITE_USER}/config/angie/mime.types
+sudo curl -fsSL ${REPO}/config/angie/modules.conf -o /home/${SITE_USER}/config/angie/modules.conf
+sudo chown -R root:${SITE_USER} /home/${SITE_USER}/config
+sudo find /home/${SITE_USER}/config -type f -exec chmod 0640 {} +
+
+sudo curl -fsSL ${REPO}/docker-compose.yaml -o /home/${SITE_USER}/docker-compose.yaml
+sudo curl -fsSL ${REPO}/examples/.env.example -o /home/${SITE_USER}/.env
+sudo curl -fsSL ${REPO}/examples/wordpress.env.example -o /home/${SITE_USER}/wordpress.env
+sudo curl -fsSL ${REPO}/examples/notifier.env.example -o /home/${SITE_USER}/notifier.env
+sudo chmod 0600 /home/${SITE_USER}/{docker-compose.yaml,.env,wordpress.env,notifier.env}
+
+sudo -u ${SITE_USER} curl -fsSL ${REPO}/examples/data/wp-config.php.example -o /home/${SITE_USER}/data/wp-config.php
+sudo -u ${SITE_USER} curl -fsSL ${REPO}/examples/data/wp-content/mu-plugins/wp-notify.php.example \
+  -o /home/${SITE_USER}/data/wp-content/mu-plugins/wp-notify.php
+sudo -u ${SITE_USER} curl -fsSL ${REPO}/examples/data/wp-content/mu-plugins/wp-performance.php.example \
+  -o /home/${SITE_USER}/data/wp-content/mu-plugins/wp-performance.php
+```
+
+Configure `.env` (set `SITE_USER`, `APP_UID`, `APP_GID` from `id ${SITE_USER}`), `wordpress.env`, `notifier.env`, and transfer any custom plugin/theme constants from your old `wp-config.php` into `/home/${SITE_USER}/data/wp-config.php`:
+
+```bash
+sudo nano /home/${SITE_USER}/.env
+sudo nano /home/${SITE_USER}/wordpress.env
+sudo nano /home/${SITE_USER}/notifier.env
+sudo -u ${SITE_USER} nano /home/${SITE_USER}/data/wp-config.php
+```
+
+Transfer `wordpress-files.tar.gz` to `/home/${SITE_USER}/` and the SQL dump `site.sql` into `/home/${SITE_USER}/mariadb-backup/` (e.g. via `scp`/`rsync`).
 
 ### 4. Extract the archive and fix ownership
 
@@ -700,7 +814,10 @@ Review your old `wp-config.php` and transfer any plugin or theme-specific consta
 sudo -u ${SITE_USER} tar -xzf /home/${SITE_USER}/wordpress-files.tar.gz \
   -C /home/${SITE_USER}/data \
   --exclude=wp-config.php
-sudo chown -R ${SITE_USER}:${SITE_USER} /home/${SITE_USER}
+sudo chown -R ${SITE_USER}:${SITE_USER} /home/${SITE_USER}/data
+sudo chmod 0700 /home/${SITE_USER}/data
+sudo find /home/${SITE_USER}/data -mindepth 1 -type d -exec chmod 0755 {} +
+sudo find /home/${SITE_USER}/data -type f -exec chmod 0644 {} +
 ```
 
 ### 5. Replace old filesystem paths in files
@@ -852,7 +969,7 @@ Build the CLI image (it is under the `tools` profile):
 docker compose -f docker-compose.dev.yaml --profile tools build wp-cli
 ```
 
-> NOTE: In `docker-compose.dev.yaml`, the `notifier` service and its SMTP secrets are commented out by default so that local development environments can run without configuring mail credentials. If you wish to test notifications locally (e.g. using Mailpit or an external SMTP relay), uncomment the `notifier` service and `smtp_*` secrets in `docker-compose.dev.yaml` and provide the corresponding secret files.
+> NOTE: In `docker-compose.dev.yaml`, the `notifier` service, its `sockets_notify` volume, and its SMTP secrets are commented out by default so that local development environments can run without configuring mail credentials. If you wish to test notifications locally (e.g. using Mailpit or an external SMTP relay), uncomment the `notifier` service, `sockets_notify` volume mounts/definition, and `smtp_*` secrets in `docker-compose.dev.yaml` and provide the corresponding secret files.
 
 ### Code Quality Checks
 

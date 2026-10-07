@@ -51,7 +51,7 @@ if (!function_exists('getenv_docker')) {
 define('DB_NAME', get_docker_secret('db_name'));
 define('DB_USER', get_docker_secret('db_user'));
 define('DB_PASSWORD', get_docker_secret('db_password'));
-define('DB_HOST', getenv_docker('WORDPRESS_DB_HOST', 'localhost:/var/run/sockets/mysql.sock'));
+define('DB_HOST', getenv_docker('WORDPRESS_DB_HOST', 'localhost:/var/run/sockets/mysql/mysql.sock'));
 define('DB_CHARSET', getenv_docker('WORDPRESS_DB_CHARSET', 'utf8mb4'));
 define('DB_COLLATE', getenv_docker('WORDPRESS_DB_COLLATE', ''));
 
@@ -164,7 +164,7 @@ if (!$redisDisabled && extension_loaded('redis')) {
         define('WP_REDIS_CONFIG', [
             'token' => $redisToken,
             'client' => 'phpredis',
-            'host' => '/var/run/sockets/valkey.sock',
+            'host' => '/var/run/sockets/valkey/valkey.sock',
             'port' => 0,
             'database' => $redisDatabase,
             'prefix' => $redisPrefix,
@@ -188,7 +188,7 @@ if (!$redisDisabled && extension_loaded('redis')) {
         ]);
     } else {
         define('WP_REDIS_SCHEME', 'unix');
-        define('WP_REDIS_PATH', '/var/run/sockets/valkey.sock');
+        define('WP_REDIS_PATH', '/var/run/sockets/valkey/valkey.sock');
         define('WP_REDIS_PREFIX', $redisPrefix);
         define('WP_REDIS_DATABASE', $redisDatabase);
     }

@@ -28,7 +28,7 @@ services:
       - db_password
       - db_root_password
     healthcheck:
-      test: ["CMD-SHELL", "export MYSQL_PWD=\"$(cat /run/secrets/db_password)\"; mariadb-admin ping --socket=/var/run/sockets/mysql.sock --user=\"$(cat /run/secrets/db_user)\" --silent"]
+      test: ["CMD-SHELL", "export MYSQL_PWD=\"$(cat /run/secrets/db_password)\"; mariadb-admin ping --socket=/var/run/sockets/mysql/mysql.sock --user=\"$(cat /run/secrets/db_user)\" --silent"]
       interval: 10s
       timeout: 3s
       retries: 3
@@ -37,7 +37,7 @@ services:
       - /run/mysqld:mode=0700,noexec,nosuid,nodev,size=16m
       - /tmp:mode=1777,noexec,nosuid,nodev,size=64m
     volumes:
-      - sockets:/var/run/sockets
+      - sockets_mysql:/var/run/sockets/mysql
       - ./mariadb:/var/lib/mysql:rw,noexec,nosuid,nodev
       - ./config/mysql/my.cnf:/etc/mysql/conf.d/my.cnf:ro
       - /etc/localtime:/etc/localtime:ro
@@ -64,7 +64,7 @@ services:
     cpus: 0.5
     command: ["valkey-server", "/etc/valkey/valkey.conf"]
     healthcheck:
-      test: ["CMD", "valkey-cli", "-s", "/var/run/sockets/valkey.sock", "ping"]
+      test: ["CMD", "valkey-cli", "-s", "/var/run/sockets/valkey/valkey.sock", "ping"]
       interval: 10s
       timeout: 3s
       retries: 3
@@ -72,7 +72,7 @@ services:
     tmpfs:
       - /tmp:mode=1777,noexec,nosuid,nodev,size=64m
     volumes:
-      - sockets:/var/run/sockets
+      - sockets_valkey:/var/run/sockets/valkey
       - ./config/valkey/valkey.conf:/etc/valkey/valkey.conf:ro
       - /etc/localtime:/etc/localtime:ro
     logging:
@@ -118,7 +118,7 @@ services:
     pids_limit: 60
     environment:
       SITE_USER: "${SITE_USER}"
-      WORDPRESS_DB_HOST: "localhost:/var/run/sockets/mysql.sock"
+      WORDPRESS_DB_HOST: "localhost:/var/run/sockets/mysql/mysql.sock"
       WORDPRESS_DB_NAME_FILE: /run/secrets/db_name
       WORDPRESS_DB_USER_FILE: /run/secrets/db_user
       WORDPRESS_DB_PASSWORD_FILE: /run/secrets/db_password
@@ -144,7 +144,10 @@ services:
       - /tmp:mode=1777,noexec,nosuid,nodev,size=64m
       - /run/php:mode=1777,noexec,nosuid,nodev,size=16m
     volumes:
-      - sockets:/var/run/sockets
+      - sockets_mysql:/var/run/sockets/mysql
+      - sockets_valkey:/var/run/sockets/valkey
+      - sockets_php:/var/run/sockets/php
+      # - sockets_notify:/var/run/sockets/notify
       - ./tmp:/var/www/tmp:rw,noexec,nosuid,nodev
       - ./${DATA_DIR:-data}:/var/www/html:rw
       - ./${DATA_DIR:-data}/${WP_CONTENT_DIR:-wp-content}/uploads:/var/www/html/${WP_CONTENT_DIR:-wp-content}/uploads:rw,noexec,nosuid,nodev
@@ -192,7 +195,7 @@ services:
       WP_CLI_PACKAGES_DIR: /var/www/.wp-cli/packages
       WP_CLI_CACHE_DIR: /var/www/.wp-cli/cache
       COMPOSER_HOME: /var/www/.wp-cli/composer
-      WORDPRESS_DB_HOST: "localhost:/var/run/sockets/mysql.sock"
+      WORDPRESS_DB_HOST: "localhost:/var/run/sockets/mysql/mysql.sock"
       WORDPRESS_DB_NAME_FILE: /run/secrets/db_name
       WORDPRESS_DB_USER_FILE: /run/secrets/db_user
       WORDPRESS_DB_PASSWORD_FILE: /run/secrets/db_password
@@ -218,7 +221,9 @@ services:
       - /tmp:mode=1777,noexec,nosuid,nodev,size=64m
       - /run/php:mode=1777,noexec,nosuid,nodev,size=16m
     volumes:
-      - sockets:/var/run/sockets
+      - sockets_mysql:/var/run/sockets/mysql
+      - sockets_valkey:/var/run/sockets/valkey
+      # - sockets_notify:/var/run/sockets/notify
       - ./tmp:/var/www/tmp:rw,noexec,nosuid,nodev
       - ./.wp-cli:/var/www/.wp-cli:rw,noexec,nosuid,nodev
       - ./${DATA_DIR:-data}:/var/www/html:rw
@@ -254,11 +259,11 @@ services:
       - no-new-privileges:true
     mem_limit: 32m
     cpus: 0.2
-    command: ["TCP4-LISTEN:3306,fork,reuseaddr", "UNIX-CONNECT:/var/run/sockets/mysql.sock"]
+    command: ["TCP4-LISTEN:3306,fork,reuseaddr", "UNIX-CONNECT:/var/run/sockets/mysql/mysql.sock"]
     ports:
       - "127.0.0.1:${DB_BRIDGE_PORT:-3307}:3306"
     volumes:
-      - sockets:/var/run/sockets
+      - sockets_mysql:/var/run/sockets/mysql
       - /etc/localtime:/etc/localtime:ro
     depends_on:
       mariadb:
@@ -301,7 +306,7 @@ services:
   #     - smtp_mail
   #     - smtp_password
   #   volumes:
-  #     - sockets:/var/run/sockets
+  #     - sockets_notify:/var/run/sockets/notify
   #     - ./secrets:/etc/notifier/secrets:ro
   #     - /etc/localtime:/etc/localtime:ro
   #   logging:
@@ -335,7 +340,7 @@ services:
       - /run/angie:mode=1777,noexec,nosuid,nodev,size=16m
       - /tmp:mode=1777,noexec,nosuid,nodev,size=64m
     volumes:
-      - sockets:/var/run/sockets
+      - sockets_php:/var/run/sockets/php
       - ./${DATA_DIR:-data}:/var/www/html:ro
       - ./tmp:/var/www/tmp:rw,noexec,nosuid,nodev
       - ./config/angie/angie.conf:/etc/angie/angie.conf:ro
@@ -391,12 +396,30 @@ secrets:
 #    file: ./secrets/smtp_password.txt
 
 volumes:
-  sockets:
+  sockets_mysql:
     driver: local
     driver_opts:
       type: tmpfs
       device: tmpfs
-      o: "size=16m,mode=0700,uid=${APP_UID},gid=${APP_GID},noexec,nosuid,nodev"
+      o: "size=4m,mode=0700,uid=${APP_UID},gid=${APP_GID},noexec,nosuid,nodev"
+  sockets_valkey:
+    driver: local
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
+      o: "size=4m,mode=0700,uid=${APP_UID},gid=${APP_GID},noexec,nosuid,nodev"
+  sockets_php:
+    driver: local
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
+      o: "size=4m,mode=0700,uid=${APP_UID},gid=${APP_GID},noexec,nosuid,nodev"
+#  sockets_notify:
+#    driver: local
+#    driver_opts:
+#      type: tmpfs
+#      device: tmpfs
+#      o: "size=4m,mode=0700,uid=${APP_UID},gid=${APP_GID},noexec,nosuid,nodev"
 
 networks:
   frontend_gateway:
