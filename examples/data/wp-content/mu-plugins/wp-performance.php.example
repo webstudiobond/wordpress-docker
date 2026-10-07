@@ -1,5 +1,12 @@
 <?php
 
+/**
+ * Plugin Name: WP Performance Optimizer
+ * Description: Prevents gateway timeouts during core/plugin updates via early FastCGI flush and enforces IPv4 cURL.
+ * Version: 1.0.0
+ * Author: underhax
+ */
+
 declare(strict_types=1);
 
 /**

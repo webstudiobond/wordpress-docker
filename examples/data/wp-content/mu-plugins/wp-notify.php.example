@@ -1,5 +1,12 @@
 <?php
 
+/**
+ * Plugin Name: WP Notify Mailer
+ * Description: Intercepts wp_mail() and dispatches payloads to go-notifier over a local UNIX socket.
+ * Version: 1.0.0
+ * Author: underhax
+ */
+
 declare(strict_types=1);
 
 final class WpNotifyMailer
