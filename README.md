@@ -317,14 +317,14 @@ If you need to change PHP memory limits, they must be adjusted **consistently** 
 
 ### 10. Start the Stack
 
-Pull images and start:
+Pull all images (including `tools` profile services such as `wp-cli`) and start the stack:
 
 ```bash
-docker compose -f /home/${SITE_USER}/docker-compose.yaml pull
+docker compose -f /home/${SITE_USER}/docker-compose.yaml --profile tools pull
 docker compose -f /home/${SITE_USER}/docker-compose.yaml up -d
 ```
 
-On first run, the `init` service automatically populates `data/` with clean WordPress core files and exits. When deploying a new image (`docker compose pull` followed by `docker compose up -d`), `init` automatically upgrades or rolls back WordPress core files (`wp-admin/`, `wp-includes/`, root PHP files) to strictly match the container image version, without ever touching user data, uploads, or `wp-content/`.
+On first run, the `init` service automatically populates `data/` with clean WordPress core files and exits. When deploying a new image (`docker compose --profile tools pull` followed by `docker compose up -d`), `init` automatically upgrades or rolls back WordPress core files (`wp-admin/`, `wp-includes/`, root PHP files) to strictly match the container image version, without ever touching user data, uploads, or `wp-content/`.
 
 The hardened FPM runtime then starts with a read-only root filesystem — WordPress write operations (installing and updating plugins, themes, uploading media) continue to work normally through dedicated writable bind mounts.
 
@@ -837,6 +837,7 @@ find /home/${SITE_USER}/data -type f \( -name "*.php" -o -name "*.json" -o -name
 ### 6. Start the stack
 
 ```bash
+docker compose -f /home/${SITE_USER}/docker-compose.yaml --profile tools pull
 docker compose -f /home/${SITE_USER}/docker-compose.yaml up -d
 ```
 

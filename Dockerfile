@@ -1,6 +1,6 @@
 FROM wordpress:cli-2.12.0-php8.5@sha256:c522811ac21e737b9e986adfc068bdd085fb5b3bfbd786642303336114ea78c4 AS wpcli-donor
 
-FROM wordpress:7.1.2-php8.5-fpm-alpine@sha256:72435cd45884447f7d679390fc7f65808943f9bf0e2d5c8992b47e57089f948c AS wordpress-donor
+FROM wordpress:7.1.3-php8.5-fpm-alpine@sha256:a2f288bfcf3cd459873e55f69d2532a729354e74f550105410f401fe4b05ec9e AS wordpress-donor
 
 FROM debian:trixie-slim@sha256:a99cfc517144bc59b1978475ec53b46ecabec7e43635402ee5b77cc54cd1b20a AS base
 
