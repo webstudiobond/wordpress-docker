@@ -28,4 +28,10 @@ spl_autoload_register(static function (string $class): void {
     if ($class === 'WpCoreCleanup') {
         require_once __DIR__ . '/../examples/data/wp-content/mu-plugins/wp-core-cleanup.php.example';
     }
+    if ($class === 'WpTransliterator') {
+        require_once __DIR__ . '/../examples/data/wp-content/mu-plugins/wp-transliterator.php.example';
+    }
+    if ($class === 'WpYoutube') {
+        require_once __DIR__ . '/../examples/data/wp-content/mu-plugins/wp-youtube.php.example';
+    }
 });

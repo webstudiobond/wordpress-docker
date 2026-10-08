@@ -409,6 +409,7 @@ final class WpPostDuplicatorTest extends TestCase
         $this->assertArrayHasKey('admin_action_wp_duplicate_post', $GLOBALS['test_registered_actions']);
         $this->assertArrayHasKey('post_row_actions', $GLOBALS['test_registered_filters']);
         $this->assertArrayHasKey('page_row_actions', $GLOBALS['test_registered_filters']);
+        unset($GLOBALS['test_registered_actions'], $GLOBALS['test_registered_filters']);
     }
 
     #[RunInSeparateProcess]

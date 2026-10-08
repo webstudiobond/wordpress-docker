@@ -1,0 +1,816 @@
+<?php
+
+/**
+ * Plugin Name: WP Transliterator
+ * Description: Transliterates non-Latin post, page, and term slugs on save and uploaded media filenames.
+ * Version: 1.0.0
+ * Author: underhax
+ */
+
+declare(strict_types=1);
+
+/**
+ * Converts non-Latin characters in newly saved WordPress slugs and uploaded
+ * media filenames into Latin equivalents using ISO 9, locale-specific, or universal tables.
+ */
+final class WpTransliterator
+{
+    private const array MAC_NFD_MAP = [
+        "Е\u{0308}" => 'Ё',
+        "е\u{0308}" => 'ё',
+        "И\u{0306}" => 'Й',
+        "и\u{0306}" => 'й',
+        "І\u{0308}" => 'Ї',
+        "і\u{0308}" => 'ї',
+        "У\u{0306}" => 'Ў',
+        "у\u{0306}" => 'ў',
+    ];
+
+    private const array ISO9_TABLE = [
+        'А' => 'A',
+        'Б' => 'B',
+        'В' => 'V',
+        'Г' => 'G',
+        'Д' => 'D',
+        'Е' => 'E',
+        'Ё' => 'YO',
+        'Ж' => 'ZH',
+        'З' => 'Z',
+        'И' => 'I',
+        'Й' => 'J',
+        'К' => 'K',
+        'Л' => 'L',
+        'М' => 'M',
+        'Н' => 'N',
+        'О' => 'O',
+        'П' => 'P',
+        'Р' => 'R',
+        'С' => 'S',
+        'Т' => 'T',
+        'У' => 'U',
+        'Ф' => 'F',
+        'Х' => 'X',
+        'Ц' => 'CZ',
+        'Ч' => 'CH',
+        'Ш' => 'SH',
+        'Щ' => 'SHH',
+        'Ъ' => '',
+        'Ы' => 'Y',
+        'Ь' => '',
+        'Э' => 'E',
+        'Ю' => 'YU',
+        'Я' => 'YA',
+        'а' => 'a',
+        'б' => 'b',
+        'в' => 'v',
+        'г' => 'g',
+        'д' => 'd',
+        'е' => 'e',
+        'ё' => 'yo',
+        'ж' => 'zh',
+        'з' => 'z',
+        'и' => 'i',
+        'й' => 'j',
+        'к' => 'k',
+        'л' => 'l',
+        'м' => 'm',
+        'н' => 'n',
+        'о' => 'o',
+        'п' => 'p',
+        'р' => 'r',
+        'с' => 's',
+        'т' => 't',
+        'у' => 'u',
+        'ф' => 'f',
+        'х' => 'x',
+        'ц' => 'cz',
+        'ч' => 'ch',
+        'ш' => 'sh',
+        'щ' => 'shh',
+        'ъ' => '',
+        'ы' => 'y',
+        'ь' => '',
+        'э' => 'e',
+        'ю' => 'yu',
+        'я' => 'ya',
+        'І' => 'I',
+        'і' => 'i',
+        'Ѣ' => 'YE',
+        'ѣ' => 'ye',
+        'Ѳ' => 'FH',
+        'ѳ' => 'fh',
+        'Ѵ' => 'YH',
+        'ѵ' => 'yh',
+    ];
+
+    private const array UNIVERSAL_CYRILLIC_EXTENSIONS = [
+        'ИЇ' => 'YI',
+        'Иї' => 'Yi',
+        'иї' => 'yi',
+        'Ё' => 'Yo',
+        'Ж' => 'Zh',
+        'Х' => 'Kh',
+        'х' => 'kh',
+        'Ц' => 'Ts',
+        'ц' => 'ts',
+        'Ч' => 'Ch',
+        'Ш' => 'Sh',
+        'Щ' => 'Shch',
+        'щ' => 'shch',
+        'Ю' => 'Yu',
+        'Я' => 'Ya',
+        'Ґ' => 'G',
+        'ґ' => 'g',
+        'Є' => 'Ye',
+        'є' => 'ye',
+        'Ї' => 'Yi',
+        'ї' => 'yi',
+        'Ў' => 'U',
+        'ў' => 'u',
+        'Ѫ' => 'O',
+        'ѫ' => 'o',
+        'Ѓ' => 'G',
+        'ѓ' => 'g',
+        'Ѕ' => 'Z',
+        'ѕ' => 'z',
+        'Ј' => 'J',
+        'ј' => 'j',
+        'Љ' => 'Lj',
+        'љ' => 'lj',
+        'Њ' => 'Nj',
+        'њ' => 'nj',
+        'Ќ' => 'K',
+        'ќ' => 'k',
+        'Џ' => 'Dz',
+        'џ' => 'dz',
+        'Ђ' => 'Dj',
+        'ђ' => 'dj',
+        'Ћ' => 'C',
+        'ћ' => 'c',
+        'Ә' => 'Ae',
+        'ә' => 'ae',
+        'Ғ' => 'Gh',
+        'ғ' => 'gh',
+        'Қ' => 'Q',
+        'қ' => 'q',
+        'Ң' => 'Ng',
+        'ң' => 'ng',
+        'Ө' => 'Oe',
+        'ө' => 'oe',
+        'Ұ' => 'U',
+        'ұ' => 'u',
+        'Ү' => 'Ue',
+        'ү' => 'ue',
+        'Һ' => 'H',
+        'һ' => 'h',
+        'Á' => 'A',
+        'á' => 'a',
+        'Ǵ' => 'G',
+        'ǵ' => 'g',
+        'Ń' => 'N',
+        'ń' => 'n',
+        'Ó' => 'O',
+        'ó' => 'o',
+        'Ú' => 'O',
+        'ú' => 'o',
+        'Ý' => 'O',
+        'ý' => 'o',
+        'ı' => 'i',
+    ];
+
+    private const array UK_WORD_INTERNAL_MAP = [
+        'Є' => 'Ie',
+        'є' => 'ie',
+        'Ї' => 'I',
+        'ї' => 'i',
+        'Й' => 'I',
+        'й' => 'i',
+        'Ю' => 'Iu',
+        'ю' => 'iu',
+        'Я' => 'Ia',
+        'я' => 'ia',
+    ];
+
+    private const array LOCALE_OVERRIDES = [
+        'uk' => [
+            'ЗГ' => 'ZGH',
+            'Зг' => 'Zgh',
+            'зг' => 'zgh',
+            'Г' => 'H',
+            'г' => 'h',
+            'Ґ' => 'G',
+            'ґ' => 'g',
+            'Ё' => 'Yo',
+            'Є' => 'Ye',
+            'є' => 'ye',
+            'Ж' => 'Zh',
+            'И' => 'Y',
+            'и' => 'y',
+            'І' => 'I',
+            'і' => 'i',
+            'Ї' => 'Yi',
+            'ї' => 'yi',
+            'Й' => 'Y',
+            'й' => 'y',
+            'Х' => 'Kh',
+            'х' => 'kh',
+            'Ц' => 'Ts',
+            'ц' => 'ts',
+            'Ч' => 'Ch',
+            'Ш' => 'Sh',
+            'Щ' => 'Shch',
+            'щ' => 'shch',
+            'Ю' => 'Yu',
+            'Я' => 'Ya',
+        ],
+        'bel' => [
+            'І' => 'I',
+            'і' => 'i',
+            'Ў' => 'U',
+            'ў' => 'u',
+        ],
+        'bg_BG' => [
+            'Щ' => 'STH',
+            'щ' => 'sth',
+            'Ъ' => 'A',
+            'ъ' => 'a',
+            'Ѫ' => 'O',
+            'ѫ' => 'o',
+        ],
+        'mk_MK' => [
+            'Ѓ' => 'G',
+            'ѓ' => 'g',
+            'Ѕ' => 'Z',
+            'ѕ' => 'z',
+            'Ј' => 'J',
+            'ј' => 'j',
+            'Љ' => 'L',
+            'љ' => 'l',
+            'Њ' => 'N',
+            'њ' => 'n',
+            'Ќ' => 'K',
+            'ќ' => 'k',
+            'Џ' => 'DH',
+            'џ' => 'dh',
+        ],
+        'sr_RS' => [
+            'Ђ' => 'Dj',
+            'ђ' => 'dj',
+            'Ж' => 'Z',
+            'ж' => 'z',
+            'J' => 'J',
+            'j' => 'j',
+            'Љ' => 'Lj',
+            'љ' => 'lj',
+            'Њ' => 'Nj',
+            'њ' => 'nj',
+            'Ћ' => 'C',
+            'ћ' => 'c',
+            'Ц' => 'C',
+            'ц' => 'c',
+            'Ч' => 'C',
+            'ч' => 'c',
+            'Џ' => 'Dz',
+            'џ' => 'dz',
+            'Ш' => 'S',
+            'ш' => 's',
+        ],
+        'kk' => [
+            'Ә' => 'Ae',
+            'ә' => 'ae',
+            'Ғ' => 'Gh',
+            'ғ' => 'gh',
+            'Қ' => 'Q',
+            'қ' => 'q',
+            'Ң' => 'Ng',
+            'ң' => 'ng',
+            'Ө' => 'Oe',
+            'ө' => 'oe',
+            'У' => 'W',
+            'у' => 'w',
+            'Ұ' => 'U',
+            'ұ' => 'u',
+            'Ү' => 'Ue',
+            'ү' => 'ue',
+            'Һ' => 'H',
+            'һ' => 'h',
+            'Ц' => 'C',
+            'ц' => 'c',
+            'Á' => 'A',
+            'á' => 'a',
+            'Ǵ' => 'G',
+            'ǵ' => 'g',
+            'Ń' => 'N',
+            'ń' => 'n',
+            'Ó' => 'O',
+            'ó' => 'o',
+            'Ú' => 'O',
+            'ú' => 'o',
+            'Ý' => 'O',
+            'ý' => 'o',
+            'ı' => 'i',
+        ],
+    ];
+
+    private const array STANDALONE_TABLES = [
+        'el' => [
+            'Α' => 'A',
+            'Ά' => 'A',
+            'Β' => 'B',
+            'Γ' => 'G',
+            'Δ' => 'D',
+            'Ε' => 'E',
+            'Έ' => 'E',
+            'Ζ' => 'Z',
+            'Η' => 'E',
+            'Ή' => 'E',
+            'Θ' => 'TH',
+            'Ι' => 'I',
+            'Ί' => 'I',
+            'Ϊ' => 'I',
+            'Κ' => 'K',
+            'Λ' => 'L',
+            'Μ' => 'M',
+            'Ν' => 'N',
+            'Ξ' => 'X',
+            'Ο' => 'O',
+            'Ό' => 'O',
+            'Π' => 'P',
+            'Ρ' => 'R',
+            'Σ' => 'S',
+            'Τ' => 'T',
+            'Υ' => 'U',
+            'Ύ' => 'U',
+            'Ϋ' => 'U',
+            'Φ' => 'PH',
+            'Χ' => 'KH',
+            'Ψ' => 'PS',
+            'Ω' => 'O',
+            'Ώ' => 'O',
+            'α' => 'a',
+            'ά' => 'a',
+            'β' => 'b',
+            'γ' => 'g',
+            'δ' => 'd',
+            'ε' => 'e',
+            'έ' => 'e',
+            'ζ' => 'z',
+            'η' => 'e',
+            'ή' => 'e',
+            'θ' => 'th',
+            'ι' => 'i',
+            'ί' => 'i',
+            'ϊ' => 'i',
+            'ΐ' => 'i',
+            'κ' => 'k',
+            'λ' => 'l',
+            'μ' => 'm',
+            'ν' => 'n',
+            'ξ' => 'x',
+            'ο' => 'o',
+            'ό' => 'o',
+            'π' => 'p',
+            'ρ' => 'r',
+            'σ' => 's',
+            'ς' => 's',
+            'τ' => 't',
+            'υ' => 'u',
+            'ύ' => 'u',
+            'ϋ' => 'u',
+            'ΰ' => 'u',
+            'φ' => 'ph',
+            'χ' => 'kh',
+            'ψ' => 'ps',
+            'ω' => 'o',
+            'ώ' => 'o',
+        ],
+        'hy' => [
+            'ՈՒ' => 'U',
+            'ու' => 'u',
+            'Ա' => 'A',
+            'Բ' => 'B',
+            'Գ' => 'G',
+            'Դ' => 'D',
+            'Ե' => 'E',
+            'Զ' => 'Z',
+            'Է' => 'E',
+            'Ը' => 'Y',
+            'Թ' => 'T',
+            'Ժ' => 'ZH',
+            'Ի' => 'I',
+            'Լ' => 'L',
+            'Խ' => 'X',
+            'Ծ' => 'C',
+            'Կ' => 'K',
+            'Հ' => 'H',
+            'Ձ' => 'J',
+            'Ղ' => 'GH',
+            'Ճ' => 'CH',
+            'Մ' => 'M',
+            'Յ' => 'Y',
+            'Ն' => 'N',
+            'Շ' => 'SH',
+            'Ո' => 'O',
+            'Չ' => 'CH',
+            'Պ' => 'P',
+            'Ջ' => 'J',
+            'Ռ' => 'RR',
+            'Ս' => 'S',
+            'Վ' => 'V',
+            'Տ' => 'T',
+            'Ր' => 'R',
+            'Ց' => 'C',
+            'Ւ' => 'W',
+            'Փ' => 'P',
+            'Ք' => 'Q',
+            'Օ' => 'O',
+            'Ֆ' => 'F',
+            'ա' => 'a',
+            'բ' => 'b',
+            'գ' => 'g',
+            'դ' => 'd',
+            'ե' => 'e',
+            'զ' => 'z',
+            'է' => 'e',
+            'ը' => 'y',
+            'թ' => 't',
+            'ժ' => 'zh',
+            'ի' => 'i',
+            'լ' => 'l',
+            'խ' => 'x',
+            'ծ' => 'c',
+            'կ' => 'k',
+            'հ' => 'h',
+            'ձ' => 'j',
+            'ղ' => 'gh',
+            'ճ' => 'ch',
+            'մ' => 'm',
+            'յ' => 'y',
+            'ն' => 'n',
+            'շ' => 'sh',
+            'ո' => 'o',
+            'չ' => 'ch',
+            'պ' => 'p',
+            'ջ' => 'j',
+            'ռ' => 'rr',
+            'ս' => 's',
+            'վ' => 'v',
+            'տ' => 't',
+            'ր' => 'r',
+            'ց' => 'c',
+            'ւ' => 'w',
+            'փ' => 'p',
+            'ք' => 'q',
+            'օ' => 'o',
+            'ֆ' => 'f',
+            'և' => 'ew',
+        ],
+        'ka_GE' => [
+            'ა' => 'a',
+            'ბ' => 'b',
+            'გ' => 'g',
+            'დ' => 'd',
+            'ე' => 'e',
+            'ვ' => 'v',
+            'ზ' => 'z',
+            'ჱ' => '',
+            'თ' => 'th',
+            'ი' => 'i',
+            'კ' => 'k',
+            'ლ' => 'l',
+            'მ' => 'm',
+            'ნ' => 'n',
+            'ჲ' => '',
+            'ო' => 'o',
+            'პ' => 'p',
+            'ჟ' => 'zh',
+            'რ' => 'r',
+            'ს' => 's',
+            'ტ' => 't',
+            'ჳ' => '',
+            'უ' => 'u',
+            'ფ' => 'ph',
+            'ქ' => 'kh',
+            'ღ' => 'gh',
+            'ყ' => 'qh',
+            'შ' => 'sh',
+            'ჩ' => 'ch',
+            'ც' => 'ts',
+            'ძ' => 'dz',
+            'წ' => 'c',
+            'ჭ' => 'ch',
+            'ხ' => 'kh',
+            'ჴ' => '',
+            'ჯ' => 'j',
+            'ჰ' => 'h',
+            'ჵ' => '',
+        ],
+        'he_IL' => [
+            "\u{05D0}" => '',
+            "\u{05D1}" => 'b',
+            "\u{05D2}" => 'g',
+            "\u{05D3}" => 'd',
+            "\u{05D4}" => 'h',
+            "\u{05D5}" => 'w',
+            "\u{05D6}" => 'z',
+            "\u{05D7}" => 'x',
+            "\u{05D8}" => 't',
+            "\u{05D9}" => 'y',
+            "\u{05DA}" => '',
+            "\u{05DB}" => 'kh',
+            "\u{05DC}" => 'l',
+            "\u{05DD}" => '',
+            "\u{05DE}" => 'm',
+            "\u{05DF}" => '',
+            "\u{05E0}" => 'n',
+            "\u{05E1}" => 's',
+            "\u{05E2}" => '',
+            "\u{05E3}" => '',
+            "\u{05E4}" => 'ph',
+            "\u{05E5}" => '',
+            "\u{05E6}" => 's',
+            "\u{05E7}" => 'k',
+            "\u{05E8}" => 'r',
+            "\u{05E9}" => 'sh',
+            "\u{05EA}" => 'th',
+        ],
+    ];
+
+    private const array LOCALE_ALIASES = [
+        'iso9' => 'ISO9',
+        'iso' => 'ISO9',
+        'universal' => 'universal',
+        'default' => 'universal',
+        'multi' => 'universal',
+        'all' => 'universal',
+        'ru' => 'universal',
+        'ru_ru' => 'universal',
+        'uk' => 'uk',
+        'uk_ua' => 'uk',
+        'bel' => 'bel',
+        'be' => 'bel',
+        'be_by' => 'bel',
+        'bg' => 'bg_BG',
+        'bg_bg' => 'bg_BG',
+        'mk' => 'mk_MK',
+        'mk_mk' => 'mk_MK',
+        'sr' => 'sr_RS',
+        'sr_rs' => 'sr_RS',
+        'kk' => 'kk',
+        'kk_kz' => 'kk',
+        'el' => 'el',
+        'el_gr' => 'el',
+        'gr' => 'el',
+        'hy' => 'hy',
+        'hy_am' => 'hy',
+        'ka' => 'ka_GE',
+        'ka_ge' => 'ka_GE',
+        'he' => 'he_IL',
+        'he_il' => 'he_IL',
+    ];
+
+    /**
+     * @param (callable(string): (string|false))|null $envGetter
+     * @param (callable(): string)|null $localeGetter
+     * @param (callable(string): string)|null $accentRemover
+     * @param (callable(string, callable, int, int): void)|null $filterAdder
+     */
+    public function __construct(
+        private readonly mixed $envGetter = null,
+        private readonly mixed $localeGetter = null,
+        private readonly mixed $accentRemover = null,
+        private readonly mixed $filterAdder = null
+    ) {
+    }
+
+    public function isSlugsEnabled(): bool
+    {
+        return $this->isEnvEnabled('WP_TRANSLIT_SLUGS');
+    }
+
+    public function isFilenamesEnabled(): bool
+    {
+        return $this->isEnvEnabled('WP_TRANSLIT_FILENAMES');
+    }
+
+    public function getConfiguredTable(): string
+    {
+        $raw = $this->getEnv('WP_TRANSLIT_TABLE');
+        if ($raw === false || trim($raw) === '') {
+            return 'universal';
+        }
+
+        $normalized = strtolower(trim($raw));
+        if ($normalized === 'auto') {
+            $locale = strtolower(trim($this->getCurrentLocale()));
+            return self::LOCALE_ALIASES[$locale] ?? 'universal';
+        }
+
+        return self::LOCALE_ALIASES[$normalized] ?? 'universal';
+    }
+
+    /**
+     * @return array<string, string>
+     */
+    public function getCustomOverrides(): array
+    {
+        $raw = $this->getEnv('WP_TRANSLIT_OVERRIDES');
+        if ($raw === false || trim($raw) === '') {
+            return [];
+        }
+
+        $overrides = [];
+        foreach (explode(',', $raw) as $pair) {
+            $trimmedPair = trim($pair);
+            if ($trimmedPair === '' || !str_contains($trimmedPair, ':')) {
+                continue;
+            }
+
+            [$source, $target] = explode(':', $trimmedPair, 2);
+            $sourceKey = trim($source);
+            if ($sourceKey !== '') {
+                $overrides[$sourceKey] = trim($target);
+            }
+        }
+
+        return $overrides;
+    }
+
+    /**
+     * @return array<string, string>
+     */
+    public function getConversionTable(): array
+    {
+        $tableKey = $this->getConfiguredTable();
+
+        if ($tableKey === 'universal') {
+            $table = array_replace(
+                self::ISO9_TABLE,
+                self::UNIVERSAL_CYRILLIC_EXTENSIONS,
+                self::STANDALONE_TABLES['el'],
+                self::STANDALONE_TABLES['hy'],
+                self::STANDALONE_TABLES['ka_GE'],
+                self::STANDALONE_TABLES['he_IL']
+            );
+        } elseif (isset(self::STANDALONE_TABLES[$tableKey])) {
+            $table = self::STANDALONE_TABLES[$tableKey];
+        } else {
+            $table = self::ISO9_TABLE;
+            if (isset(self::LOCALE_OVERRIDES[$tableKey])) {
+                $table = array_replace($table, self::LOCALE_OVERRIDES[$tableKey]);
+            }
+        }
+
+        $customOverrides = $this->getCustomOverrides();
+        if ($customOverrides !== []) {
+            $table = array_replace($table, $customOverrides);
+        }
+
+        return $table;
+    }
+
+    public function transliterate(string $value): string
+    {
+        if ($value === '') {
+            return '';
+        }
+
+        $normalized = strtr($value, self::MAC_NFD_MAP);
+        $prepared = $this->applyPositionalRules($normalized);
+
+        return strtr($prepared, $this->getConversionTable());
+    }
+
+    public function sanitizeTitle(string $title, string $rawTitle = '', string $context = 'save'): string
+    {
+        unset($rawTitle);
+
+        if (!$this->isSlugsEnabled() || $context !== 'save' || $title === '') {
+            return $title;
+        }
+
+        return $this->transliterate($title);
+    }
+
+    public function sanitizeFileName(string $filename): string
+    {
+        if (!$this->isFilenamesEnabled() || $filename === '') {
+            return $filename;
+        }
+
+        $unaccented = $this->removeAccents($filename);
+
+        return $this->transliterate($unaccented);
+    }
+
+    public function registerHooks(): void
+    {
+        if ($this->isSlugsEnabled()) {
+            $this->addFilter('sanitize_title', [$this, 'sanitizeTitle'], 9, 3);
+        }
+
+        if ($this->isFilenamesEnabled()) {
+            $this->addFilter('sanitize_file_name', [$this, 'sanitizeFileName'], 10, 1);
+        }
+    }
+
+    private function applyPositionalRules(string $text): string
+    {
+        $tableKey = $this->getConfiguredTable();
+        if ($tableKey !== 'uk' && $tableKey !== 'universal') {
+            return $text;
+        }
+
+        $text = (string) preg_replace('/(?<=\p{Cyrillic})[\'\x{2019}\x{02BC}](?=\p{Cyrillic})/u', '', $text);
+        $customOverrides = $this->getCustomOverrides();
+
+        if ($tableKey === 'uk') {
+            return (string) preg_replace_callback(
+                '/(?<=\p{Cyrillic})([ЄєЇїЙйЮюЯя])/u',
+                static function (array $matches) use ($customOverrides): string {
+                    $char = $matches[1];
+                    if (array_key_exists($char, $customOverrides)) {
+                        return $char;
+                    }
+
+                    return self::UK_WORD_INTERNAL_MAP[$char];
+                },
+                $text
+            );
+        }
+
+        return (string) preg_replace_callback(
+            '/(?<=\p{Cyrillic})(?<![Ии])([Її])/u',
+            static function (array $matches) use ($customOverrides): string {
+                $char = $matches[1];
+                if (array_key_exists($char, $customOverrides)) {
+                    return $char;
+                }
+
+                return $char === 'Ї' ? 'I' : 'i';
+            },
+            $text
+        );
+    }
+
+    private function isEnvEnabled(string $envName): bool
+    {
+        $raw = $this->getEnv($envName);
+        if ($raw === false || trim($raw) === '') {
+            return true;
+        }
+
+        return !in_array(strtolower(trim($raw)), ['false', '0', 'off', 'no'], true);
+    }
+
+    private function getCurrentLocale(): string
+    {
+        if (is_callable($this->localeGetter)) {
+            return (string) ($this->localeGetter)();
+        }
+
+        if (function_exists('get_locale')) {
+            return get_locale();
+        }
+
+        return 'universal';
+    }
+
+    private function removeAccents(string $value): string
+    {
+        if (is_callable($this->accentRemover)) {
+            return (string) ($this->accentRemover)($value);
+        }
+
+        if (function_exists('remove_accents')) {
+            return remove_accents($value);
+        }
+
+        return $value;
+    }
+
+    private function addFilter(string $tag, callable $callback, int $priority, int $acceptedArgs): void
+    {
+        if (is_callable($this->filterAdder)) {
+            ($this->filterAdder)($tag, $callback, $priority, $acceptedArgs);
+            return;
+        }
+
+        if (function_exists('add_filter')) {
+            add_filter($tag, $callback, $priority, $acceptedArgs);
+        }
+    }
+
+    private function getEnv(string $name): string|false
+    {
+        if (is_callable($this->envGetter)) {
+            return ($this->envGetter)($name);
+        }
+
+        return getenv($name);
+    }
+}
+
+if (function_exists('add_filter')) {
+    (new WpTransliterator())->registerHooks();
+}

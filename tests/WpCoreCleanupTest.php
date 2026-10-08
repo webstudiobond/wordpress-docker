@@ -27,6 +27,8 @@ final class WpCoreCleanupTest extends TestCase
         unset(
             $GLOBALS['wp_widget_factory'],
             $GLOBALS['test_wp_options'],
+            $GLOBALS['test_registered_actions'],
+            $GLOBALS['test_registered_filters'],
             $GLOBALS['test_removed_actions'],
             $GLOBALS['test_removed_filters'],
             $GLOBALS['test_is_admin'],

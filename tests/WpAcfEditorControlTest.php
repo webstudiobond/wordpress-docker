@@ -288,6 +288,7 @@ final class WpAcfEditorControlTest extends TestCase
         $this->assertArrayHasKey('acf/delete_field_group', $GLOBALS['test_registered_actions']);
         $this->assertArrayHasKey('use_block_editor_for_post_type', $GLOBALS['test_registered_filters']);
         $this->assertArrayHasKey('use_block_editor_for_post', $GLOBALS['test_registered_filters']);
+        unset($GLOBALS['test_registered_actions'], $GLOBALS['test_registered_filters']);
     }
 
     #[RunInSeparateProcess]

@@ -76,7 +76,8 @@ Production-ready, fully decoupled, and resource-efficient containerized WordPres
     │   │   ├── wp-telemetry-blocker.php
     │   │   ├── wp-acf-editor-control.php
     │   │   ├── wp-post-duplicator.php
-    │   │   └── wp-core-cleanup.php
+    │   │   ├── wp-core-cleanup.php
+    │   │   └── wp-transliterator.php
     │   ├── uploads/                 # Uploaded media assets
     │   └── ...
     └── ...                          # WordPress core files (auto-populated by init service)
@@ -469,7 +470,55 @@ Configuration (`wordpress.env` — baseline head, header, emoji, self-ping, and 
 
 ---
 
-### 7. UNIX Socket Mail Dispatcher (`wp-notify.php`)
+### 7. Slug & Filename Transliterator (`wp-transliterator.php`)
+
+Source: [`examples/data/wp-content/mu-plugins/wp-transliterator.php.example`](examples/data/wp-content/mu-plugins/wp-transliterator.php.example)
+
+* Automatically transliterates non-Latin slugs of newly saved posts, pages, and taxonomy terms (`sanitize_title` in `'save'` context without breaking existing frontend URLs) and newly uploaded media filenames (`sanitize_file_name`), including macOS NFD decomposed character normalization and European diacritics removal via WordPress `remove_accents()`.
+* Operates entirely in memory using OPcache-backed constant conversion tables (`ISO9`, `universal` combined multilingual table, `uk`, `bel`, `bg_BG`, `mk_MK`, `sr_RS`, `kk`, `el`, `hy`, `ka_GE`, `he_IL`) with zero database queries.
+
+Installation:
+
+```bash
+REPO="https://raw.githubusercontent.com/webstudiobond/wordpress-docker/main"
+sudo -u ${SITE_USER} curl -fsSL ${REPO}/examples/data/wp-content/mu-plugins/wp-transliterator.php.example \
+  -o /home/${SITE_USER}/data/wp-content/mu-plugins/wp-transliterator.php
+```
+
+Configuration (`wordpress.env` — defaults to `universal` with both slug and filename transliteration enabled):
+* `WP_TRANSLIT_TABLE=universal` — conversion table to use (`universal` / `multi` / `all` combined multilingual table by default, `auto` to resolve from WordPress `get_locale()`, `uk`, `ISO9`, `bel`, `bg_BG`, `mk_MK`, `sr_RS`, `kk`, `el`, `hy`, `ka_GE`, or `he_IL`).
+* `WP_TRANSLIT_SLUGS=true` — transliterate newly saved post, page, and term slugs (`false` to disable).
+* `WP_TRANSLIT_FILENAMES=true` — transliterate newly uploaded media filenames (`false` to disable).
+* `WP_TRANSLIT_OVERRIDES=` — optional comma-separated `char:replacement` pairs applied on top of the selected table (e.g., `ц:ts,Ц:TS`).
+
+---
+
+### 8. YouTube Channel Statistics & oEmbed Tools (`wp-youtube.php`)
+
+Source: [`examples/data/wp-content/mu-plugins/wp-youtube.php.example`](examples/data/wp-content/mu-plugins/wp-youtube.php.example)
+
+* Automatically rewrites YouTube oEmbed iframes to privacy-enhanced `youtube-nocookie.com/embed/` and replaces `?feature=oembed` with clean, non-deprecated player parameters (`rel=0&playsinline=1&iv_load_policy=3`).
+* Optionally provides cached YouTube Data API v3 shortcodes (`[ytv]` for total channel views, `[yts]` for subscriber count, `[ytc]` for video count) backed by WordPress transients and `wp_remote_get()`, reading default credentials from Docker Secrets (`wp_youtube_api_key`, `wp_youtube_channel_id`) or `wordpress.env`.
+
+Installation:
+
+```bash
+REPO="https://raw.githubusercontent.com/webstudiobond/wordpress-docker/main"
+sudo -u ${SITE_USER} curl -fsSL ${REPO}/examples/data/wp-content/mu-plugins/wp-youtube.php.example \
+  -o /home/${SITE_USER}/data/wp-content/mu-plugins/wp-youtube.php
+```
+
+Configuration (`wordpress.env` — oEmbed parameter cleanup and `youtube-nocookie.com` are enabled by default; channel statistics shortcodes are opt-in):
+* `WP_YOUTUBE_OEMBED_CLEANUP=true` — customize YouTube oEmbed iframe parameters (`false` to disable).
+* `WP_YOUTUBE_NOCOOKIE=true` — rewrite `youtube.com/embed/` to `youtube-nocookie.com/embed/` (`false` to disable).
+* `WP_YOUTUBE_OEMBED_PARAMS=rel=0&playsinline=1&iv_load_policy=3` — query string parameters applied to YouTube oEmbed URLs.
+* `WP_YOUTUBE_SHORTCODES=false` — set to `true` (`1`, `on`, `yes`) to register `[ytv]`, `[yts]`, and `[ytc]` shortcodes.
+* `WP_YOUTUBE_API_KEY=` — fallback YouTube Data API v3 key if not passed via `secrets/wp_youtube_api_key.txt` or shortcode `apikey="..."` attribute.
+* `WP_YOUTUBE_CHANNEL_ID=` — fallback YouTube channel ID if not passed via `secrets/wp_youtube_channel_id.txt` or shortcode `channel="..."` attribute.
+
+---
+
+### 9. UNIX Socket Mail Dispatcher (`wp-notify.php`)
 
 Source: [`examples/data/wp-content/mu-plugins/wp-notify.php.example`](examples/data/wp-content/mu-plugins/wp-notify.php.example)
 

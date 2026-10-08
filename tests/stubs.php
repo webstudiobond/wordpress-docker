@@ -317,3 +317,109 @@ function ensure_cleanup_stubs(): void
         }
     }
 }
+
+function ensure_transliterator_stubs(): void
+{
+    if (!function_exists('get_locale')) {
+        function get_locale(): string
+        {
+            $locale = $GLOBALS['test_wp_locale'] ?? 'en_US';
+            return is_string($locale) ? $locale : 'en_US';
+        }
+    }
+
+    if (!function_exists('remove_accents')) {
+        function remove_accents(string $text): string
+        {
+            return strtr($text, [
+                'ą' => 'a',
+                'ć' => 'c',
+                'ę' => 'e',
+                'ł' => 'l',
+                'ń' => 'n',
+                'ó' => 'o',
+                'ś' => 's',
+                'ź' => 'z',
+                'ż' => 'z',
+                'Ą' => 'A',
+                'Ć' => 'C',
+                'Ę' => 'E',
+                'Ł' => 'L',
+                'Ń' => 'N',
+                'Ó' => 'O',
+                'Ś' => 'S',
+                'Ź' => 'Z',
+                'Ż' => 'Z',
+                'ä' => 'a',
+                'ö' => 'o',
+                'ü' => 'u',
+                'ß' => 'ss',
+            ]);
+        }
+    }
+}
+
+function ensure_youtube_stubs(): void
+{
+    if (!function_exists('get_docker_secret')) {
+        function get_docker_secret(string $name, string $default = ''): string
+        {
+            $secrets = $GLOBALS['test_docker_secrets'] ?? [];
+            if (is_array($secrets) && isset($secrets[$name]) && is_string($secrets[$name])) {
+                return $secrets[$name];
+            }
+            return $default;
+        }
+    }
+
+    if (!function_exists('get_transient')) {
+        function get_transient(string $transient): mixed
+        {
+            return $GLOBALS['test_transients'][$transient] ?? false;
+        }
+    }
+
+    if (!function_exists('set_transient')) {
+        function set_transient(string $transient, mixed $value, int $expiration = 0): bool
+        {
+            $GLOBALS['test_transients'][$transient] = $value;
+            $GLOBALS['test_transient_expirations'][$transient] = $expiration;
+            return true;
+        }
+    }
+
+    if (!function_exists('wp_remote_get')) {
+        /**
+         * @param array<string, mixed> $args
+         */
+        function wp_remote_get(string $url, array $args = []): mixed
+        {
+            $GLOBALS['test_remote_get_calls'][] = ['url' => $url, 'args' => $args];
+            return $GLOBALS['test_remote_get_response'] ?? ['body' => ''];
+        }
+    }
+
+    if (!function_exists('is_wp_error')) {
+        function is_wp_error(mixed $thing): bool
+        {
+            return is_array($thing) && !empty($thing['wp_error']);
+        }
+    }
+
+    if (!function_exists('wp_remote_retrieve_body')) {
+        function wp_remote_retrieve_body(mixed $response): string
+        {
+            if (is_array($response) && isset($response['body']) && is_string($response['body'])) {
+                return $response['body'];
+            }
+            return '';
+        }
+    }
+
+    if (!function_exists('add_shortcode')) {
+        function add_shortcode(string $tag, callable $callback): void
+        {
+            $GLOBALS['test_registered_shortcodes'][$tag] = $callback;
+        }
+    }
+}
