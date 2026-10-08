@@ -555,19 +555,19 @@ wp_mysite action-scheduler clean --batches=20
 Create a fast, compressed database backup using `zstd`:
 
 ```bash
-docker compose -f /home/${SITE_USER}/docker-compose.yaml run --rm wp-cli db export --single-transaction --quick - | zstd -q > /home/${SITE_USER}/mariadb-backup/db_backup_$(date +%Y%m%d_%H%M%S).sql.zst
+docker compose -f /home/${SITE_USER}/docker-compose.yaml run --rm wp-cli db export --single-transaction --quick - | zstd -q > /home/${SITE_USER}/mariadb-backup/db_backup_$(date +%Y-%m-%d_%H-%M-%S).sql.zst
 ```
 
 Or using the shell alias:
 
 ```bash
-wp_mysite db export --single-transaction --quick - | zstd -q > /home/mysite/mariadb-backup/db_backup_$(date +%Y%m%d_%H%M%S).sql.zst
+wp_mysite db export --single-transaction --quick - | zstd -q > /home/mysite/mariadb-backup/db_backup_$(date +%Y-%m-%d_%H-%M-%S).sql.zst
 ```
 
 To restore a compressed database backup:
 
 ```bash
-zstd -dc /home/${SITE_USER}/mariadb-backup/db_backup_YYYYMMDD_HHMMSS.sql.zst | docker compose -f /home/${SITE_USER}/docker-compose.yaml run --rm -T wp-cli db import -
+zstd -dc /home/${SITE_USER}/mariadb-backup/db_backup_YYYY-MM-DD_HH-MM-SS.sql.zst | docker compose -f /home/${SITE_USER}/docker-compose.yaml run --rm -T wp-cli db import -
 ```
 
 > NOTE: The `-T` flag disables pseudo-TTY allocation in Docker Compose, ensuring the piped SQL stream passes through stdin reliably without corruption or terminal escape sequences.
@@ -655,7 +655,7 @@ Configuration examples ([full example](examples/etc/cron.d/wordpress-mysite.exam
 
 **Automated database backup (every 6 hours, keeps backups for 7 days):**
 ```cron
-0 */6 * * * root docker compose -f /home/mysite/docker-compose.yaml run --rm wp-cli db export --single-transaction --quick - | zstd -q > /home/mysite/mariadb-backup/db_backup_$(date +\%Y\%m\%d_\%H\%M\%S).sql.zst && find /home/mysite/mariadb-backup -type f -name "*.sql.zst" -mtime +7 -delete
+0 */6 * * * root docker compose -f /home/mysite/docker-compose.yaml run --rm wp-cli db export --single-transaction --quick - | zstd -q > /home/mysite/mariadb-backup/db_backup_$(date +\%Y-\%m-\%d_\%H-\%M-\%S).sql.zst && find /home/mysite/mariadb-backup -type f -name "*.sql.zst" -mtime +7 -delete
 ```
 > NOTE:
 > The automated backup job requires `zstd` installed on the host (`sudo apt update && sudo apt install -y zstd`).
