@@ -74,7 +74,9 @@ Production-ready, fully decoupled, and resource-efficient containerized WordPres
     │   │   ├── wp-performance.php
     │   │   ├── wp-translation-updates-disabler.php
     │   │   ├── wp-telemetry-blocker.php
-    │   │   └── wp-acf-editor-control.php
+    │   │   ├── wp-acf-editor-control.php
+    │   │   ├── wp-post-duplicator.php
+    │   │   └── wp-core-cleanup.php
     │   ├── uploads/                 # Uploaded media assets
     │   └── ...
     └── ...                          # WordPress core files (auto-populated by init service)
@@ -417,7 +419,57 @@ sudo -u ${SITE_USER} curl -fsSL ${REPO}/examples/data/wp-content/mu-plugins/wp-a
 
 ---
 
-### 5. UNIX Socket Mail Dispatcher (`wp-notify.php`)
+### 5. Post & Page Duplicator (`wp-post-duplicator.php`)
+
+Source: [`examples/data/wp-content/mu-plugins/wp-post-duplicator.php.example`](examples/data/wp-content/mu-plugins/wp-post-duplicator.php.example)
+
+* Adds a one-click *Duplicate* action to posts, pages, and configured custom post types in the WordPress dashboard, cloning content, taxonomy terms, and custom fields (including serialized ACF and page-builder metadata) without installing third-party duplicator plugins.
+* Preserves Polylang language assignments while excluding internal translation group bindings and edit locks so duplicated drafts never overwrite existing multilingual links or old slug redirects.
+
+Installation:
+
+```bash
+REPO="https://raw.githubusercontent.com/webstudiobond/wordpress-docker/main"
+sudo -u ${SITE_USER} curl -fsSL ${REPO}/examples/data/wp-content/mu-plugins/wp-post-duplicator.php.example \
+  -o /home/${SITE_USER}/data/wp-content/mu-plugins/wp-post-duplicator.php
+```
+
+Configuration (`wordpress.env` — works out of the box for `post` and `page` as drafts):
+* `WP_DUPLICATOR_POST_TYPES=post,page` — comma-separated list of post type and custom post type (CPT) slugs (e.g., `post,page,product,portfolio,bbb-room`), `*` for all non-system post types, or `none` to disable.
+* `WP_DUPLICATOR_STATUS=draft` — status assigned to newly created clones (`draft`, `pending`, `private`, or `publish`).
+* `WP_DUPLICATOR_KEEP_AUTHOR=true` — set to `false` (`0`, `off`, `no`) to assign the user performing the duplication as the author instead of keeping the original author.
+* `WP_DUPLICATOR_CAPABILITY=edit_posts` — base capability required in addition to per-post `edit_post` permission (e.g., `edit_posts`, `publish_posts`, `edit_others_posts`, `edit_pages`, or `manage_options`).
+
+---
+
+### 6. Core Head, Header & Comment Cleanup (`wp-core-cleanup.php`)
+
+Source: [`examples/data/wp-content/mu-plugins/wp-core-cleanup.php.example`](examples/data/wp-content/mu-plugins/wp-core-cleanup.php.example)
+
+* Removes redundant WordPress `<head>` metadata (`wp_generator`, `wlwmanifest`, `rsd`, `shortlink`, REST API discovery links, feed links, oEmbed links, DNS prefetch hints, profile link), strips the `X-Powered-By` and `X-Pingback` HTTP headers, disables internal self-pingbacks, and removes core Emoji scripts/styles out of the box.
+* Hardens comment forms against link spam by removing the website (`url`) field, disabling automatic link conversion (`make_clickable`), and deregistering `comment-reply.js`, with optional flags to disable Gutenberg global styles, `jquery-migrate`, and Speculative Loading.
+
+Installation:
+
+```bash
+REPO="https://raw.githubusercontent.com/webstudiobond/wordpress-docker/main"
+sudo -u ${SITE_USER} curl -fsSL ${REPO}/examples/data/wp-content/mu-plugins/wp-core-cleanup.php.example \
+  -o /home/${SITE_USER}/data/wp-content/mu-plugins/wp-core-cleanup.php
+```
+
+Configuration (`wordpress.env` — baseline head, header, emoji, self-ping, and comment cleanups are enabled by default):
+* `WP_CLEANUP_HEAD_TAGS=generator,wlwmanifest,rsd,shortlink,rest_links,feeds,oembed,dns_prefetch,profile` — comma-separated list of `<head>` items to remove, `*` for all, or `none` to keep all default tags.
+* `WP_CLEANUP_HIDE_POWERED_BY=true` — removes the `X-Powered-By` HTTP response header (`false` to disable).
+* `WP_CLEANUP_DISABLE_SELF_PING=true` — blocks pingbacks to the site's own URLs and removes the `X-Pingback` HTTP header (`false` to disable).
+* `WP_CLEANUP_DISABLE_EMOJIS=true` — disables core Emoji scripts and styles (`false` to keep).
+* `WP_CLEANUP_COMMENTS=url_field,make_clickable,reply_js` — comma-separated list of comment cleanups (`url_field`, `make_clickable`, `reply_js`, `recent_styles`), `*` for all four, or `none` to disable.
+* `WP_CLEANUP_DISABLE_GLOBAL_STYLES=false` — set to `true` to remove Gutenberg `global-styles` inline CSS and SVG duotone filters on the frontend.
+* `WP_CLEANUP_DISABLE_JQUERY_MIGRATE=false` — set to `true` to remove `jquery-migrate` from frontend pages.
+* `WP_CLEANUP_DISABLE_SPECULATIVE_LOADING=false` — set to `true` to disable WordPress Speculative Loading rules.
+
+---
+
+### 7. UNIX Socket Mail Dispatcher (`wp-notify.php`)
 
 Source: [`examples/data/wp-content/mu-plugins/wp-notify.php.example`](examples/data/wp-content/mu-plugins/wp-notify.php.example)
 

@@ -1,0 +1,560 @@
+<?php
+
+/**
+ * Plugin Name: WP Post Duplicator
+ * Description: Clones posts, pages, and custom post types with taxonomy terms and metadata.
+ * Version: 1.0.0
+ * Author: underhax
+ */
+
+declare(strict_types=1);
+
+/**
+ * Handles post, page, and custom post type duplication in the WordPress administration dashboard.
+ */
+final class WpPostDuplicator
+{
+    public const string ACTION_NAME = 'wp_duplicate_post';
+    public const string NONCE_PREFIX = 'wp_duplicate_post_';
+
+    private const array DEFAULT_POST_TYPES = [
+        'post',
+        'page',
+    ];
+
+    private const array ALLOWED_STATUSES = [
+        'draft',
+        'pending',
+        'private',
+        'publish',
+    ];
+
+    private const array EXCLUDED_SYSTEM_POST_TYPES = [
+        'attachment',
+        'revision',
+        'nav_menu_item',
+        'custom_css',
+        'customize_changeset',
+        'oembed_cache',
+        'user_request',
+        'wp_block',
+        'wp_template',
+        'wp_template_part',
+        'wp_global_styles',
+        'wp_navigation',
+        'acf-field-group',
+        'acf-field',
+    ];
+
+    private const array EXCLUDED_TAXONOMIES = [
+        'post_translations',
+    ];
+
+    private const array EXCLUDED_META_KEYS = [
+        '_edit_lock',
+        '_edit_last',
+        '_wp_old_slug',
+        '_wp_old_date',
+    ];
+
+    /**
+     * @param (callable(string): (string|false))|null $envGetter
+     * @param (callable(string, ?int): bool)|null $capabilityChecker
+     * @param (callable(string, string): string)|null $nonceUrlGenerator
+     * @param (callable(string): bool)|null $nonceVerifier
+     * @param (callable(int): ?object)|null $postGetter
+     * @param (callable(array<string, mixed>): int)|null $postInserter
+     * @param (callable(int, int, string): void)|null $taxonomyCopier
+     * @param (callable(int, int): void)|null $metaCopier
+     * @param (callable(): int)|null $currentUserIdGetter
+     * @param (callable(string): void)|null $redirector
+     * @param (callable(string, int): void)|null $errorHandler
+     */
+    public function __construct(
+        private readonly mixed $envGetter = null,
+        private readonly mixed $capabilityChecker = null,
+        private readonly mixed $nonceUrlGenerator = null,
+        private readonly mixed $nonceVerifier = null,
+        private readonly mixed $postGetter = null,
+        private readonly mixed $postInserter = null,
+        private readonly mixed $taxonomyCopier = null,
+        private readonly mixed $metaCopier = null,
+        private readonly mixed $currentUserIdGetter = null,
+        private readonly mixed $redirector = null,
+        private readonly mixed $errorHandler = null
+    ) {
+    }
+
+    /**
+     * @return list<string>
+     */
+    public function getAllowedPostTypes(): array
+    {
+        $raw = $this->getEnv('WP_DUPLICATOR_POST_TYPES');
+        if ($raw === false || trim($raw) === '') {
+            return self::DEFAULT_POST_TYPES;
+        }
+
+        $trimmed = trim($raw);
+        if (in_array(strtolower($trimmed), ['none', 'false', '0', 'off', 'no'], true)) {
+            return [];
+        }
+
+        $types = [];
+        foreach (explode(',', $trimmed) as $item) {
+            $slug = trim($item);
+            if ($slug !== '' && !in_array($slug, $types, true)) {
+                $types[] = $slug;
+            }
+        }
+
+        return $types;
+    }
+
+    public function isPostTypeAllowed(string $postType): bool
+    {
+        $normalized = trim($postType);
+        if ($normalized === '' || in_array($normalized, self::EXCLUDED_SYSTEM_POST_TYPES, true)) {
+            return false;
+        }
+
+        $allowed = $this->getAllowedPostTypes();
+        if (in_array('*', $allowed, true)) {
+            return true;
+        }
+
+        return in_array($normalized, $allowed, true);
+    }
+
+    public function getDuplicateStatus(): string
+    {
+        $raw = $this->getEnv('WP_DUPLICATOR_STATUS');
+        if ($raw === false || trim($raw) === '') {
+            return 'draft';
+        }
+
+        $normalized = strtolower(trim($raw));
+        if (in_array($normalized, self::ALLOWED_STATUSES, true)) {
+            return $normalized;
+        }
+
+        return 'draft';
+    }
+
+    public function shouldKeepAuthor(): bool
+    {
+        $raw = $this->getEnv('WP_DUPLICATOR_KEEP_AUTHOR');
+        if ($raw === false || trim($raw) === '') {
+            return true;
+        }
+
+        return !in_array(strtolower(trim($raw)), ['false', '0', 'off', 'no'], true);
+    }
+
+    public function getRequiredCapability(): string
+    {
+        $raw = $this->getEnv('WP_DUPLICATOR_CAPABILITY');
+        if ($raw === false || trim($raw) === '') {
+            return 'edit_posts';
+        }
+
+        return trim($raw);
+    }
+
+    /**
+     * @param array<string, string> $actions
+     * @return array<string, string>
+     */
+    public function addDuplicateRowAction(array $actions, mixed $post): array
+    {
+        if (!is_object($post)) {
+            return $actions;
+        }
+
+        $vars = get_object_vars($post);
+        $rawId = $vars['ID'] ?? null;
+        $postId = is_int($rawId) || is_numeric($rawId) ? (int) $rawId : 0;
+        $postType = isset($vars['post_type']) && is_string($vars['post_type']) ? trim($vars['post_type']) : '';
+
+        if ($postId <= 0 || !$this->isPostTypeAllowed($postType)) {
+            return $actions;
+        }
+
+        if (!$this->currentUserCan($this->getRequiredCapability()) || !$this->currentUserCan('edit_post', $postId)) {
+            return $actions;
+        }
+
+        $url = $this->buildDuplicateUrl($postId);
+        $escapedUrl = htmlspecialchars($url, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8', false);
+
+        $actions['duplicate'] = '<a href="' . $escapedUrl . '" title="Duplicate this item" rel="permalink">Duplicate</a>';
+
+        return $actions;
+    }
+
+    public function duplicatePost(object $post): int
+    {
+        $vars = get_object_vars($post);
+        $rawId = $vars['ID'] ?? null;
+        $sourcePostId = is_int($rawId) || is_numeric($rawId) ? (int) $rawId : 0;
+        $postType = isset($vars['post_type']) && is_string($vars['post_type']) ? trim($vars['post_type']) : '';
+
+        if ($sourcePostId <= 0 || !$this->isPostTypeAllowed($postType)) {
+            return 0;
+        }
+
+        $rawAuthor = $vars['post_author'] ?? null;
+        $originalAuthor = is_int($rawAuthor) || is_numeric($rawAuthor) ? (int) $rawAuthor : 0;
+        $postAuthor = $this->shouldKeepAuthor() && $originalAuthor > 0
+            ? $originalAuthor
+            : $this->getCurrentUserId();
+
+        $rawParent = $vars['post_parent'] ?? null;
+        $postParent = is_int($rawParent) || is_numeric($rawParent) ? (int) $rawParent : 0;
+
+        $rawMenuOrder = $vars['menu_order'] ?? null;
+        $menuOrder = is_int($rawMenuOrder) || is_numeric($rawMenuOrder) ? (int) $rawMenuOrder : 0;
+
+        $postContent = isset($vars['post_content']) && is_string($vars['post_content']) ? $vars['post_content'] : '';
+        $postTitle = isset($vars['post_title']) && is_string($vars['post_title']) ? $vars['post_title'] : '';
+        $postExcerpt = isset($vars['post_excerpt']) && is_string($vars['post_excerpt']) ? $vars['post_excerpt'] : '';
+
+        $newPostArgs = [
+            'comment_status' => isset($vars['comment_status']) && is_string($vars['comment_status'])
+                ? $vars['comment_status']
+                : 'closed',
+            'ping_status' => isset($vars['ping_status']) && is_string($vars['ping_status'])
+                ? $vars['ping_status']
+                : 'closed',
+            'post_author' => $postAuthor,
+            'post_content' => $this->slashValue($postContent),
+            'post_excerpt' => $this->slashValue($postExcerpt),
+            'post_parent' => $postParent,
+            'post_password' => isset($vars['post_password']) && is_string($vars['post_password'])
+                ? $vars['post_password']
+                : '',
+            'post_status' => $this->getDuplicateStatus(),
+            'post_title' => $this->slashValue($postTitle),
+            'post_type' => $postType,
+            'to_ping' => isset($vars['to_ping']) && is_string($vars['to_ping'])
+                ? $vars['to_ping']
+                : '',
+            'menu_order' => $menuOrder,
+        ];
+
+        $newPostId = $this->insertPost($newPostArgs);
+        if ($newPostId <= 0) {
+            return 0;
+        }
+
+        $this->copyTaxonomies($sourcePostId, $newPostId, $postType);
+        $this->copyPostMeta($sourcePostId, $newPostId);
+
+        return $newPostId;
+    }
+
+    public function handleDuplicateAction(?int $requestPostId = null): int
+    {
+        $postId = $requestPostId ?? $this->resolveRequestPostId();
+        if ($postId <= 0) {
+            $this->terminateWithError('No post to duplicate has been supplied.', 400);
+            return 0;
+        }
+
+        if (!$this->verifyNonce($postId)) {
+            $this->terminateWithError('Security check failed.', 403);
+            return 0;
+        }
+
+        if (!$this->currentUserCan($this->getRequiredCapability()) || !$this->currentUserCan('edit_post', $postId)) {
+            $this->terminateWithError('You are not allowed to duplicate this item.', 403);
+            return 0;
+        }
+
+        $post = $this->getPost($postId);
+        if ($post === null) {
+            $this->terminateWithError('Post creation failed, could not find original post.', 404);
+            return 0;
+        }
+
+        $vars = get_object_vars($post);
+        $postType = isset($vars['post_type']) && is_string($vars['post_type']) ? trim($vars['post_type']) : '';
+        if (!$this->isPostTypeAllowed($postType)) {
+            $this->terminateWithError('Duplication is not enabled for this post type.', 403);
+            return 0;
+        }
+
+        $newPostId = $this->duplicatePost($post);
+        if ($newPostId <= 0) {
+            $this->terminateWithError('Failed to create duplicate post.', 500);
+            return 0;
+        }
+
+        $this->redirectToEditPost($newPostId);
+
+        return $newPostId;
+    }
+
+    /**
+     * @param (callable(string, callable, int, int): void)|null $actionRegistrar
+     * @param (callable(string, callable, int, int): void)|null $filterRegistrar
+     */
+    public function registerHooks(?callable $actionRegistrar = null, ?callable $filterRegistrar = null): void
+    {
+        $actRegistrar = $actionRegistrar;
+        if ($actRegistrar === null && function_exists('add_action')) {
+            $actRegistrar = static function (
+                string $tag,
+                callable $callback,
+                int $priority = 10,
+                int $acceptedArgs = 1
+            ): void {
+                add_action($tag, $callback, $priority, $acceptedArgs);
+            };
+        }
+
+        $fltRegistrar = $filterRegistrar;
+        if ($fltRegistrar === null && function_exists('add_filter')) {
+            $fltRegistrar = static function (
+                string $tag,
+                callable $callback,
+                int $priority = 10,
+                int $acceptedArgs = 1
+            ): void {
+                add_filter($tag, $callback, $priority, $acceptedArgs);
+            };
+        }
+
+        if ($actRegistrar !== null) {
+            $actRegistrar('admin_action_' . self::ACTION_NAME, [$this, 'handleDuplicateAction'], 10, 0);
+        }
+
+        if ($fltRegistrar !== null) {
+            $fltRegistrar('post_row_actions', [$this, 'addDuplicateRowAction'], 10, 2);
+            $fltRegistrar('page_row_actions', [$this, 'addDuplicateRowAction'], 10, 2);
+        }
+    }
+
+    private function resolveRequestPostId(): int
+    {
+        $raw = $_GET['post'] ?? $_POST['post'] ?? null;
+        if (is_int($raw)) {
+            return $raw > 0 ? $raw : 0;
+        }
+
+        if (is_string($raw)) {
+            $trimmed = trim($raw);
+            if ($trimmed !== '' && ctype_digit($trimmed)) {
+                $id = (int) $trimmed;
+                return $id > 0 ? $id : 0;
+            }
+        }
+
+        return 0;
+    }
+
+    private function currentUserCan(string $capability, ?int $objectId = null): bool
+    {
+        if (is_callable($this->capabilityChecker)) {
+            return (bool) ($this->capabilityChecker)($capability, $objectId);
+        }
+
+        if (function_exists('current_user_can')) {
+            return $objectId !== null
+                ? current_user_can($capability, $objectId)
+                : current_user_can($capability);
+        }
+
+        return false;
+    }
+
+    private function buildDuplicateUrl(int $postId): string
+    {
+        $relativePath = 'admin.php?action=' . self::ACTION_NAME . '&post=' . $postId;
+        $nonceAction = self::NONCE_PREFIX . $postId;
+
+        if (is_callable($this->nonceUrlGenerator)) {
+            return (string) ($this->nonceUrlGenerator)($relativePath, $nonceAction);
+        }
+
+        $baseUrl = function_exists('admin_url') ? (string) admin_url($relativePath) : $relativePath;
+        if (function_exists('wp_nonce_url')) {
+            return (string) wp_nonce_url($baseUrl, $nonceAction);
+        }
+
+        return $baseUrl;
+    }
+
+    private function verifyNonce(int $postId): bool
+    {
+        $nonceAction = self::NONCE_PREFIX . $postId;
+
+        if (is_callable($this->nonceVerifier)) {
+            return (bool) ($this->nonceVerifier)($nonceAction);
+        }
+
+        if (function_exists('check_admin_referer')) {
+            return (bool) check_admin_referer($nonceAction);
+        }
+
+        return false;
+    }
+
+    private function getPost(int $postId): ?object
+    {
+        if (is_callable($this->postGetter)) {
+            $post = ($this->postGetter)($postId);
+            return is_object($post) ? $post : null;
+        }
+
+        if (function_exists('get_post')) {
+            $post = get_post($postId);
+            return is_object($post) ? $post : null;
+        }
+
+        return null;
+    }
+
+    /**
+     * @param array<string, mixed> $postData
+     */
+    private function insertPost(array $postData): int
+    {
+        if (is_callable($this->postInserter)) {
+            return (int) ($this->postInserter)($postData);
+        }
+
+        if (function_exists('wp_insert_post')) {
+            return (int) wp_insert_post($postData);
+        }
+
+        return 0;
+    }
+
+    private function getCurrentUserId(): int
+    {
+        if (is_callable($this->currentUserIdGetter)) {
+            return (int) ($this->currentUserIdGetter)();
+        }
+
+        if (function_exists('get_current_user_id')) {
+            return (int) get_current_user_id();
+        }
+
+        return 0;
+    }
+
+    private function copyTaxonomies(int $sourcePostId, int $targetPostId, string $postType): void
+    {
+        if (is_callable($this->taxonomyCopier)) {
+            ($this->taxonomyCopier)($sourcePostId, $targetPostId, $postType);
+            return;
+        }
+
+        if (
+            !function_exists('get_object_taxonomies')
+            || !function_exists('wp_get_object_terms')
+            || !function_exists('wp_set_object_terms')
+        ) {
+            return;
+        }
+
+        $taxonomies = get_object_taxonomies($postType);
+        if (!is_array($taxonomies)) {
+            return;
+        }
+
+        foreach ($taxonomies as $taxonomy) {
+            if (!is_string($taxonomy) || $taxonomy === '' || in_array($taxonomy, self::EXCLUDED_TAXONOMIES, true)) {
+                continue;
+            }
+
+            $terms = wp_get_object_terms($sourcePostId, $taxonomy, ['fields' => 'slugs']);
+            if (is_array($terms)) {
+                wp_set_object_terms($targetPostId, $terms, $taxonomy, false);
+            }
+        }
+    }
+
+    private function copyPostMeta(int $sourcePostId, int $targetPostId): void
+    {
+        if (is_callable($this->metaCopier)) {
+            ($this->metaCopier)($sourcePostId, $targetPostId);
+            return;
+        }
+
+        if (!function_exists('get_post_meta') || !function_exists('add_post_meta')) {
+            return;
+        }
+
+        $allMeta = get_post_meta($sourcePostId);
+        if (!is_array($allMeta)) {
+            return;
+        }
+
+        foreach ($allMeta as $metaKey => $metaValues) {
+            if (
+                !is_string($metaKey)
+                || $metaKey === ''
+                || in_array($metaKey, self::EXCLUDED_META_KEYS, true)
+                || !is_array($metaValues)
+            ) {
+                continue;
+            }
+
+            foreach ($metaValues as $rawValue) {
+                $value = function_exists('maybe_unserialize') ? maybe_unserialize($rawValue) : $rawValue;
+                add_post_meta($targetPostId, $this->slashValue($metaKey), $this->slashValue($value));
+            }
+        }
+    }
+
+    private function slashValue(mixed $value): mixed
+    {
+        if (function_exists('wp_slash')) {
+            return wp_slash($value);
+        }
+
+        return $value;
+    }
+
+    private function redirectToEditPost(int $newPostId): void
+    {
+        $relativePath = 'post.php?action=edit&post=' . $newPostId;
+        $url = function_exists('admin_url') ? (string) admin_url($relativePath) : $relativePath;
+
+        if (is_callable($this->redirector)) {
+            ($this->redirector)($url);
+            return;
+        }
+
+        if (function_exists('wp_safe_redirect')) {
+            wp_safe_redirect($url);
+        }
+    }
+
+    private function terminateWithError(string $message, int $statusCode): void
+    {
+        if (is_callable($this->errorHandler)) {
+            ($this->errorHandler)($message, $statusCode);
+            return;
+        }
+
+        if (function_exists('wp_die')) {
+            wp_die($message, '', ['response' => $statusCode]);
+        }
+    }
+
+    private function getEnv(string $name): string|false
+    {
+        if (is_callable($this->envGetter)) {
+            return ($this->envGetter)($name);
+        }
+
+        return getenv($name);
+    }
+}
+
+if (function_exists('add_action') || function_exists('add_filter')) {
+    (new WpPostDuplicator())->registerHooks();
+}

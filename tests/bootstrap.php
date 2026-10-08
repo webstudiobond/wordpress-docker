@@ -22,4 +22,10 @@ spl_autoload_register(static function (string $class): void {
     if ($class === 'WpTelemetryBlocker') {
         require_once __DIR__ . '/../examples/data/wp-content/mu-plugins/wp-telemetry-blocker.php.example';
     }
+    if ($class === 'WpPostDuplicator') {
+        require_once __DIR__ . '/../examples/data/wp-content/mu-plugins/wp-post-duplicator.php.example';
+    }
+    if ($class === 'WpCoreCleanup') {
+        require_once __DIR__ . '/../examples/data/wp-content/mu-plugins/wp-core-cleanup.php.example';
+    }
 });

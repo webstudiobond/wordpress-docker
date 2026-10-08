@@ -1,0 +1,522 @@
+<?php
+
+/**
+ * Plugin Name: WP Core Cleanup
+ * Description: Removes redundant WordPress head metadata, HTTP headers, emojis, self-pings, and comment spam vectors.
+ * Version: 1.0.0
+ * Author: underhax
+ */
+
+declare(strict_types=1);
+
+/**
+ * Applies baseline WordPress head, HTTP header, emoji, pingback, comment,
+ * and frontend asset cleanup controlled via environment variables.
+ */
+final class WpCoreCleanup
+{
+    private const array DEFAULT_HEAD_TAGS = [
+        'generator',
+        'wlwmanifest',
+        'rsd',
+        'shortlink',
+        'rest_links',
+        'feeds',
+        'oembed',
+        'dns_prefetch',
+        'profile',
+    ];
+
+    private const array ALL_COMMENT_CLEANUPS = [
+        'url_field',
+        'make_clickable',
+        'reply_js',
+        'recent_styles',
+    ];
+
+    private const array DEFAULT_COMMENT_CLEANUPS = [
+        'url_field',
+        'make_clickable',
+        'reply_js',
+    ];
+
+    /**
+     * @param (callable(string): (string|false))|null $envGetter
+     * @param (callable(string): void)|null $headerRemover
+     * @param (callable(): string)|null $homeUrlGetter
+     * @param (callable(): bool)|null $adminChecker
+     * @param (callable(string): void)|null $scriptDeregisterer
+     * @param (callable(string, callable|string, int, int): void)|null $actionAdder
+     * @param (callable(string, callable|array<int, mixed>|string, int): void)|null $actionRemover
+     * @param (callable(string, callable|string, int, int): void)|null $filterAdder
+     * @param (callable(string, callable|string, int): void)|null $filterRemover
+     */
+    public function __construct(
+        private readonly mixed $envGetter = null,
+        private readonly mixed $headerRemover = null,
+        private readonly mixed $homeUrlGetter = null,
+        private readonly mixed $adminChecker = null,
+        private readonly mixed $scriptDeregisterer = null,
+        private readonly mixed $actionAdder = null,
+        private readonly mixed $actionRemover = null,
+        private readonly mixed $filterAdder = null,
+        private readonly mixed $filterRemover = null
+    ) {
+    }
+
+    /**
+     * @return list<string>
+     */
+    public function getHeadTags(): array
+    {
+        return $this->parseTagList(
+            'WP_CLEANUP_HEAD_TAGS',
+            self::DEFAULT_HEAD_TAGS,
+            self::DEFAULT_HEAD_TAGS
+        );
+    }
+
+    public function isHeadTagDisabled(string $tag): bool
+    {
+        return in_array(strtolower(trim($tag)), $this->getHeadTags(), true);
+    }
+
+    /**
+     * @return list<string>
+     */
+    public function getCommentCleanups(): array
+    {
+        return $this->parseTagList(
+            'WP_CLEANUP_COMMENTS',
+            self::DEFAULT_COMMENT_CLEANUPS,
+            self::ALL_COMMENT_CLEANUPS
+        );
+    }
+
+    public function isCommentCleanupEnabled(string $item): bool
+    {
+        return in_array(strtolower(trim($item)), $this->getCommentCleanups(), true);
+    }
+
+    public function isPoweredByHidden(): bool
+    {
+        return $this->getBoolEnv('WP_CLEANUP_HIDE_POWERED_BY', true);
+    }
+
+    public function isSelfPingDisabled(): bool
+    {
+        return $this->getBoolEnv('WP_CLEANUP_DISABLE_SELF_PING', true);
+    }
+
+    public function isEmojisDisabled(): bool
+    {
+        return $this->getBoolEnv('WP_CLEANUP_DISABLE_EMOJIS', true);
+    }
+
+    public function isGlobalStylesDisabled(): bool
+    {
+        return $this->getBoolEnv('WP_CLEANUP_DISABLE_GLOBAL_STYLES', false);
+    }
+
+    public function isJqueryMigrateDisabled(): bool
+    {
+        return $this->getBoolEnv('WP_CLEANUP_DISABLE_JQUERY_MIGRATE', false);
+    }
+
+    public function isSpeculativeLoadingDisabled(): bool
+    {
+        return $this->getBoolEnv('WP_CLEANUP_DISABLE_SPECULATIVE_LOADING', false);
+    }
+
+    public function removePoweredByHeader(): void
+    {
+        if (!$this->isPoweredByHidden()) {
+            return;
+        }
+
+        $this->removeHeader('X-Powered-By');
+    }
+
+    /**
+     * @param array<int|string, mixed> $links
+     */
+    public function disableSelfPing(array &$links): void
+    {
+        if (!$this->isSelfPingDisabled()) {
+            return;
+        }
+
+        $homeUrl = $this->getHomeUrl();
+        if ($homeUrl === '') {
+            return;
+        }
+
+        foreach ($links as $key => $link) {
+            if (is_string($link) && str_contains($link, $homeUrl)) {
+                unset($links[$key]);
+            }
+        }
+    }
+
+    /**
+     * @param array<string, mixed> $headers
+     * @return array<string, mixed>
+     */
+    public function filterWpHeaders(array $headers): array
+    {
+        if ($this->isSelfPingDisabled()) {
+            unset($headers['X-Pingback'], $headers['x-pingback']);
+        }
+
+        return $headers;
+    }
+
+    /**
+     * @param array<string, mixed> $fields
+     * @return array<string, mixed>
+     */
+    public function filterCommentFormFields(array $fields): array
+    {
+        if ($this->isCommentCleanupEnabled('url_field')) {
+            unset($fields['url']);
+        }
+
+        return $fields;
+    }
+
+    public function onInit(): void
+    {
+        if ($this->isHeadTagDisabled('dns_prefetch')) {
+            $this->removeAction('wp_head', 'wp_resource_hints', 2);
+        }
+
+        if ($this->isCommentCleanupEnabled('reply_js')) {
+            $this->deregisterScript('comment-reply');
+        }
+
+        if ($this->isGlobalStylesDisabled()) {
+            $this->removeAction('wp_enqueue_scripts', 'wp_enqueue_global_styles', 10);
+            $this->removeAction('wp_footer', 'wp_enqueue_global_styles', 1);
+            $this->removeAction('wp_body_open', 'wp_global_styles_render_svg_filters', 10);
+        }
+    }
+
+    public function onWidgetsInit(): void
+    {
+        if (!$this->isCommentCleanupEnabled('recent_styles')) {
+            return;
+        }
+
+        $factory = $GLOBALS['wp_widget_factory'] ?? null;
+        if (!is_object($factory)) {
+            return;
+        }
+
+        $vars = get_object_vars($factory);
+        $widgets = $vars['widgets'] ?? null;
+        if (!is_array($widgets) || !isset($widgets['WP_Widget_Recent_Comments'])) {
+            return;
+        }
+
+        $widget = $widgets['WP_Widget_Recent_Comments'];
+        if (is_object($widget)) {
+            $this->removeAction('wp_head', [$widget, 'recent_comments_style'], 10);
+        }
+    }
+
+    public function onWpFooter(): void
+    {
+        if ($this->isHeadTagDisabled('oembed')) {
+            $this->deregisterScript('wp-embed');
+        }
+    }
+
+    public function removeJqueryMigrate(mixed $scripts): void
+    {
+        if (!$this->isJqueryMigrateDisabled() || $this->isAdmin() || !is_object($scripts)) {
+            return;
+        }
+
+        $vars = get_object_vars($scripts);
+        $registered = $vars['registered'] ?? null;
+        if (!is_array($registered) || !isset($registered['jquery']) || !is_object($registered['jquery'])) {
+            return;
+        }
+
+        $jquery = $registered['jquery'];
+        if (!property_exists($jquery, 'deps') || !is_array($jquery->deps)) {
+            return;
+        }
+
+        $filteredDeps = [];
+        foreach ($jquery->deps as $dep) {
+            if ($dep !== 'jquery-migrate') {
+                $filteredDeps[] = $dep;
+            }
+        }
+
+        $jquery->deps = $filteredDeps;
+    }
+
+    public function registerHooks(): void
+    {
+        $this->removePoweredByHeader();
+        $this->registerHeadTagHooks();
+        $this->registerEmojiHooks();
+        $this->registerSelfPingHooks();
+        $this->registerCommentHooks();
+
+        if (
+            $this->isHeadTagDisabled('dns_prefetch')
+            || $this->isCommentCleanupEnabled('reply_js')
+            || $this->isGlobalStylesDisabled()
+        ) {
+            $this->addAction('init', [$this, 'onInit'], 10, 0);
+        }
+
+        if ($this->isJqueryMigrateDisabled()) {
+            $this->addAction('wp_default_scripts', [$this, 'removeJqueryMigrate'], 10, 1);
+        }
+
+        if ($this->isSpeculativeLoadingDisabled()) {
+            $this->addFilter('wp_speculation_rules_configuration', '__return_null', 10, 0);
+        }
+    }
+
+    private function registerHeadTagHooks(): void
+    {
+        if ($this->isHeadTagDisabled('generator')) {
+            $this->removeAction('wp_head', 'wp_generator', 10);
+            $this->addFilter('the_generator', '__return_empty_string', 10, 0);
+        }
+
+        if ($this->isHeadTagDisabled('wlwmanifest')) {
+            $this->removeAction('wp_head', 'wlwmanifest_link', 10);
+        }
+
+        if ($this->isHeadTagDisabled('rsd')) {
+            $this->removeAction('wp_head', 'rsd_link', 10);
+        }
+
+        if ($this->isHeadTagDisabled('shortlink')) {
+            $this->removeAction('wp_head', 'wp_shortlink_wp_head', 10);
+            $this->removeAction('template_redirect', 'wp_shortlink_header', 11);
+        }
+
+        if ($this->isHeadTagDisabled('rest_links')) {
+            $this->removeAction('wp_head', 'rest_output_link_wp_head', 10);
+            $this->removeAction('template_redirect', 'rest_output_link_header', 11);
+        }
+
+        if ($this->isHeadTagDisabled('feeds')) {
+            $this->removeAction('wp_head', 'feed_links', 2);
+            $this->removeAction('wp_head', 'feed_links_extra', 3);
+        }
+
+        if ($this->isHeadTagDisabled('oembed')) {
+            $this->removeAction('wp_head', 'wp_oembed_add_discovery_links', 10);
+            $this->addAction('wp_footer', [$this, 'onWpFooter'], 10, 0);
+        }
+
+        if ($this->isHeadTagDisabled('profile')) {
+            $this->removeAction('wp_head', 'profile_link', 10);
+        }
+    }
+
+    private function registerEmojiHooks(): void
+    {
+        if (!$this->isEmojisDisabled()) {
+            return;
+        }
+
+        $this->removeAction('wp_head', 'print_emoji_detection_script', 7);
+        $this->removeAction('admin_print_scripts', 'print_emoji_detection_script', 10);
+        $this->removeAction('wp_print_styles', 'print_emoji_styles', 10);
+        $this->removeAction('admin_print_styles', 'print_emoji_styles', 10);
+        $this->addFilter('emoji_svg_url', '__return_false', 10, 0);
+    }
+
+    private function registerSelfPingHooks(): void
+    {
+        if (!$this->isSelfPingDisabled()) {
+            return;
+        }
+
+        $this->addAction('pre_ping', [$this, 'disableSelfPing'], 10, 1);
+        $this->addFilter('wp_headers', [$this, 'filterWpHeaders'], 10, 1);
+    }
+
+    private function registerCommentHooks(): void
+    {
+        if ($this->isCommentCleanupEnabled('url_field')) {
+            $this->addFilter('comment_form_default_fields', [$this, 'filterCommentFormFields'], 10, 1);
+        }
+
+        if ($this->isCommentCleanupEnabled('make_clickable')) {
+            $this->removeFilter('comment_text', 'make_clickable', 9);
+        }
+
+        if ($this->isCommentCleanupEnabled('recent_styles')) {
+            $this->addAction('widgets_init', [$this, 'onWidgetsInit'], 10, 0);
+        }
+    }
+
+    /**
+     * @param list<string> $defaultItems
+     * @param list<string> $allowedItems
+     * @return list<string>
+     */
+    private function parseTagList(string $envName, array $defaultItems, array $allowedItems): array
+    {
+        $raw = $this->getEnv($envName);
+        if ($raw === false || trim($raw) === '') {
+            return $defaultItems;
+        }
+
+        $trimmed = strtolower(trim($raw));
+        if (in_array($trimmed, ['none', 'false', '0', 'off', 'no'], true)) {
+            return [];
+        }
+
+        if ($trimmed === '*') {
+            return $allowedItems;
+        }
+
+        $parsed = [];
+        foreach (explode(',', $trimmed) as $part) {
+            $slug = trim($part);
+            if ($slug !== '' && in_array($slug, $allowedItems, true) && !in_array($slug, $parsed, true)) {
+                $parsed[] = $slug;
+            }
+        }
+
+        return $parsed;
+    }
+
+    private function getBoolEnv(string $envName, bool $default): bool
+    {
+        $raw = $this->getEnv($envName);
+        if ($raw === false || trim($raw) === '') {
+            return $default;
+        }
+
+        $normalized = strtolower(trim($raw));
+        if ($default) {
+            return !in_array($normalized, ['false', '0', 'off', 'no'], true);
+        }
+
+        return in_array($normalized, ['true', '1', 'on', 'yes'], true);
+    }
+
+    private function removeHeader(string $name): void
+    {
+        if (is_callable($this->headerRemover)) {
+            ($this->headerRemover)($name);
+            return;
+        }
+
+        if (function_exists('header_remove') && !headers_sent()) {
+            header_remove($name);
+        }
+    }
+
+    private function getHomeUrl(): string
+    {
+        if (is_callable($this->homeUrlGetter)) {
+            return trim((string) ($this->homeUrlGetter)());
+        }
+
+        $home = function_exists('get_option') ? get_option('home', '') : '';
+
+        return is_string($home) ? trim($home) : '';
+    }
+
+    private function isAdmin(): bool
+    {
+        if (is_callable($this->adminChecker)) {
+            return (bool) ($this->adminChecker)();
+        }
+
+        if (function_exists('is_admin')) {
+            return is_admin();
+        }
+
+        return false;
+    }
+
+    private function deregisterScript(string $handle): void
+    {
+        if (is_callable($this->scriptDeregisterer)) {
+            ($this->scriptDeregisterer)($handle);
+            return;
+        }
+
+        if (function_exists('wp_deregister_script')) {
+            wp_deregister_script($handle);
+        }
+    }
+
+    private function addAction(string $tag, callable|string $callback, int $priority, int $acceptedArgs): void
+    {
+        if (is_callable($this->actionAdder)) {
+            ($this->actionAdder)($tag, $callback, $priority, $acceptedArgs);
+            return;
+        }
+
+        if (function_exists('add_action')) {
+            add_action($tag, $callback, $priority, $acceptedArgs);
+        }
+    }
+
+    /**
+     * @param callable|array<int, mixed>|string $callback
+     */
+    private function removeAction(string $tag, callable|array|string $callback, int $priority): void
+    {
+        if (is_callable($this->actionRemover)) {
+            ($this->actionRemover)($tag, $callback, $priority);
+            return;
+        }
+
+        if (function_exists('remove_action')) {
+            remove_action($tag, $callback, $priority);
+        }
+    }
+
+    private function addFilter(string $tag, callable|string $callback, int $priority, int $acceptedArgs): void
+    {
+        if (is_callable($this->filterAdder)) {
+            ($this->filterAdder)($tag, $callback, $priority, $acceptedArgs);
+            return;
+        }
+
+        if (function_exists('add_filter')) {
+            add_filter($tag, $callback, $priority, $acceptedArgs);
+        }
+    }
+
+    private function removeFilter(string $tag, callable|string $callback, int $priority): void
+    {
+        if (is_callable($this->filterRemover)) {
+            ($this->filterRemover)($tag, $callback, $priority);
+            return;
+        }
+
+        if (function_exists('remove_filter')) {
+            remove_filter($tag, $callback, $priority);
+        }
+    }
+
+    private function getEnv(string $name): string|false
+    {
+        if (is_callable($this->envGetter)) {
+            return ($this->envGetter)($name);
+        }
+
+        return getenv($name);
+    }
+}
+
+if (function_exists('add_action') || function_exists('add_filter')) {
+    (new WpCoreCleanup())->registerHooks();
+}

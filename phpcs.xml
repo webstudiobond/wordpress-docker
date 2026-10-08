@@ -10,6 +10,8 @@
     <file>examples/data/wp-content/mu-plugins/wp-translation-updates-disabler.php.example</file>
     <file>examples/data/wp-content/mu-plugins/wp-acf-editor-control.php.example</file>
     <file>examples/data/wp-content/mu-plugins/wp-telemetry-blocker.php.example</file>
+    <file>examples/data/wp-content/mu-plugins/wp-post-duplicator.php.example</file>
+    <file>examples/data/wp-content/mu-plugins/wp-core-cleanup.php.example</file>
 
     <arg name="colors"/>
     <arg value="sp"/>
