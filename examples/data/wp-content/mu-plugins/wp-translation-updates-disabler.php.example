@@ -1,0 +1,207 @@
+<?php
+
+/**
+ * Plugin Name: WP Translation Updates Disabler
+ * Description: Controls background translation auto-updates and selectively disables translation updates for configured slugs.
+ * Version: 1.0.0
+ * Author: underhax
+ */
+
+declare(strict_types=1);
+
+/**
+ * Filters WordPress translation update transients and background auto-update hooks
+ * to prevent unwanted translation downloads based on environment configuration.
+ */
+final class WpTranslationUpdatesDisabler
+{
+    /**
+     * @param (callable(string): (string|false))|null $envGetter
+     * @param list<string>|null $blockedSlugs
+     */
+    public function __construct(
+        private readonly mixed $envGetter = null,
+        private readonly ?array $blockedSlugs = null
+    ) {
+    }
+
+    public function isAutoUpdateDisabled(): bool
+    {
+        $val = $this->getEnv('WP_TRANSLATION_DISABLE_AUTO_UPDATES');
+        if ($val === false || trim($val) === '') {
+            return false;
+        }
+
+        return in_array(strtolower(trim($val)), ['true', '1', 'on', 'yes'], true);
+    }
+
+    /**
+     * @return list<string>
+     */
+    public function getBlockedSlugs(): array
+    {
+        if ($this->blockedSlugs !== null) {
+            return $this->normalizeSlugs($this->blockedSlugs);
+        }
+
+        $raw = $this->getEnv('WP_TRANSLATION_BLOCKED_SLUGS');
+        if ($raw === false || trim($raw) === '') {
+            return [];
+        }
+
+        return $this->normalizeSlugs(explode(',', $raw));
+    }
+
+    public function isSlugBlocked(string $slug): bool
+    {
+        $trimmed = trim($slug);
+        if ($trimmed === '') {
+            return false;
+        }
+
+        $blocked = $this->getBlockedSlugs();
+        if ($blocked === []) {
+            return false;
+        }
+
+        if (in_array('*', $blocked, true)) {
+            return true;
+        }
+
+        return in_array($trimmed, $blocked, true);
+    }
+
+    public function filterAutoUpdate(mixed $update, mixed $item = null): bool
+    {
+        if ($this->isAutoUpdateDisabled()) {
+            return false;
+        }
+
+        $shouldUpdate = (bool) $update;
+        $blocked = $this->getBlockedSlugs();
+
+        if ($blocked === []) {
+            return $shouldUpdate;
+        }
+
+        if (in_array('*', $blocked, true)) {
+            return false;
+        }
+
+        $slug = $this->extractSlug($item);
+        if ($slug !== null && in_array($slug, $blocked, true)) {
+            return false;
+        }
+
+        return $shouldUpdate;
+    }
+
+    public function filterTransient(mixed $transient): mixed
+    {
+        $blocked = $this->getBlockedSlugs();
+        if ($blocked === []) {
+            return $transient;
+        }
+
+        if (!is_object($transient) || !isset($transient->translations) || !is_array($transient->translations)) {
+            return $transient;
+        }
+
+        if (in_array('*', $blocked, true)) {
+            $transient->translations = [];
+            return $transient;
+        }
+
+        $filtered = [];
+        foreach ($transient->translations as $translation) {
+            $slug = $this->extractSlug($translation);
+            if ($slug !== null && in_array($slug, $blocked, true)) {
+                continue;
+            }
+
+            $filtered[] = $translation;
+        }
+
+        $transient->translations = $filtered;
+
+        return $transient;
+    }
+
+    /**
+     * @param (callable(string, callable, int, int): void)|null $hookRegistrar
+     */
+    public function registerHooks(?callable $hookRegistrar = null): void
+    {
+        $registrar = $hookRegistrar;
+        if ($registrar === null && function_exists('add_filter')) {
+            $registrar = static function (
+                string $tag,
+                callable $callback,
+                int $priority = 10,
+                int $acceptedArgs = 1
+            ): void {
+                add_filter($tag, $callback, $priority, $acceptedArgs);
+            };
+        }
+
+        if ($registrar === null) {
+            return;
+        }
+
+        $registrar('auto_update_translation', [$this, 'filterAutoUpdate'], 10, 2);
+        $registrar('async_update_translation', [$this, 'filterAutoUpdate'], 10, 2);
+        $registrar('site_transient_update_plugins', [$this, 'filterTransient'], 10, 1);
+        $registrar('site_transient_update_themes', [$this, 'filterTransient'], 10, 1);
+        $registrar('site_transient_update_core', [$this, 'filterTransient'], 10, 1);
+    }
+
+    /**
+     * @param array<int|string, string> $items
+     * @return list<string>
+     */
+    private function normalizeSlugs(array $items): array
+    {
+        $normalized = [];
+        foreach ($items as $item) {
+            $trimmed = trim($item);
+            if ($trimmed !== '' && !in_array($trimmed, $normalized, true)) {
+                $normalized[] = $trimmed;
+            }
+        }
+
+        return $normalized;
+    }
+
+    private function extractSlug(mixed $item): ?string
+    {
+        if (is_array($item)) {
+            $rawSlug = $item['slug'] ?? null;
+        } elseif (is_object($item)) {
+            $vars = get_object_vars($item);
+            $rawSlug = $vars['slug'] ?? null;
+        } else {
+            return null;
+        }
+
+        if (!is_string($rawSlug)) {
+            return null;
+        }
+
+        $trimmed = trim($rawSlug);
+
+        return $trimmed !== '' ? $trimmed : null;
+    }
+
+    private function getEnv(string $name): string|false
+    {
+        if (is_callable($this->envGetter)) {
+            return ($this->envGetter)($name);
+        }
+
+        return getenv($name);
+    }
+}
+
+if (function_exists('add_filter')) {
+    (new WpTranslationUpdatesDisabler())->registerHooks();
+}

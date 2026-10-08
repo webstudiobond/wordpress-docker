@@ -13,4 +13,13 @@ spl_autoload_register(static function (string $class): void {
     if ($class === 'WpPerformance') {
         require_once __DIR__ . '/../examples/data/wp-content/mu-plugins/wp-performance.php.example';
     }
+    if ($class === 'WpTranslationUpdatesDisabler') {
+        require_once __DIR__ . '/../examples/data/wp-content/mu-plugins/wp-translation-updates-disabler.php.example';
+    }
+    if ($class === 'WpAcfEditorControl') {
+        require_once __DIR__ . '/../examples/data/wp-content/mu-plugins/wp-acf-editor-control.php.example';
+    }
+    if ($class === 'WpTelemetryBlocker') {
+        require_once __DIR__ . '/../examples/data/wp-content/mu-plugins/wp-telemetry-blocker.php.example';
+    }
 });

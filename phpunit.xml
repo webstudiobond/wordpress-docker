@@ -18,6 +18,9 @@
             <directory>build</directory>
             <file>examples/data/wp-content/mu-plugins/wp-notify.php.example</file>
             <file>examples/data/wp-content/mu-plugins/wp-performance.php.example</file>
+            <file>examples/data/wp-content/mu-plugins/wp-translation-updates-disabler.php.example</file>
+            <file>examples/data/wp-content/mu-plugins/wp-acf-editor-control.php.example</file>
+            <file>examples/data/wp-content/mu-plugins/wp-telemetry-blocker.php.example</file>
         </include>
         <exclude>
             <file>build/wp-sync.php</file>

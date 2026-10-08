@@ -5,3 +5,6 @@ parameters:
         - examples/data/wp-config.php.example
         - examples/data/wp-content/mu-plugins/wp-notify.php.example
         - examples/data/wp-content/mu-plugins/wp-performance.php.example
+        - examples/data/wp-content/mu-plugins/wp-translation-updates-disabler.php.example
+        - examples/data/wp-content/mu-plugins/wp-acf-editor-control.php.example
+        - examples/data/wp-content/mu-plugins/wp-telemetry-blocker.php.example

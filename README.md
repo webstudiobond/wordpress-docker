@@ -16,7 +16,7 @@ Production-ready, fully decoupled, and resource-efficient containerized WordPres
 * **Atomic Version Upgrades:** An automated pre-flight init service compares `wp-includes/version.php` between the image donor and the live site. On version mismatch it atomically replaces `wp-admin/`, `wp-includes/`, and root PHP files without ever touching `wp-content/` or user data.
 * **Strict Docker Secrets:** All sensitive data — database credentials, database name, table prefix, and all eight authentication keys and salts — are loaded exclusively from secret files. No plaintext credentials in environment variables, `.env`, or Compose manifests. Missing or empty secrets cause an immediate fatal error, preventing the application from starting.
 * **Zero-Secret Mail & Push Notifications:** Transactional mail (`wp_mail()`) is intercepted by a lightweight must-use plugin and dispatched over an isolated UNIX domain socket to [go-notifier](https://github.com/webstudiobond/go-notifier). This eliminates the need for third-party SMTP plugins, keeping WordPress and its database free of mail server credentials and API tokens. The daemon handles authenticated SMTP relay via Docker Secrets and supports multi-channel push alerting (Telegram, Matrix, ntfy) with subject regex routing and rate limiting.
-* **Non-Blocking Administration & Outbound IPv4 Enforcement:** A lightweight must-use plugin template (`wp-performance.php`) eliminates browser spinner hangs during core, plugin, and translation upgrades by triggering early FastCGI response flushing (`fastcgi_finish_request()`), and prevents connection timeout delays in this IPv4-only container stack by enforcing IPv4 resolution for outbound WordPress HTTP requests.
+* **Modular Must-Use (MU) Plugin Architecture:** Provides a suite of optional, zero-dependency must-use plugins configured declaratively via `wordpress.env` to harden runtime behavior, optimize administration workflows, and enforce client/server privacy controls without third-party plugin overhead or database-persisted settings.
 
 ---
 
@@ -69,9 +69,12 @@ Production-ready, fully decoupled, and resource-efficient containerized WordPres
 └── data/                            # WordPress document root
     ├── wp-config.php                # Site configuration (from examples/data/wp-config.php.example)
     ├── wp-content/                  # User content directory
-    │   ├── mu-plugins/              # Must-use plugins directory
-    │   │   ├── wp-notify.php        # Optional (go-notifier): intercepts wp_mail() via socket
-    │   │   └── wp-performance.php   # Optional: optimizes updates & external HTTP requests
+    │   ├── mu-plugins/              # Must-use plugins directory (optional templates)
+    │   │   ├── wp-notify.php
+    │   │   ├── wp-performance.php
+    │   │   ├── wp-translation-updates-disabler.php
+    │   │   ├── wp-telemetry-blocker.php
+    │   │   └── wp-acf-editor-control.php
     │   ├── uploads/                 # Uploaded media assets
     │   └── ...
     └── ...                          # WordPress core files (auto-populated by init service)
@@ -286,36 +289,7 @@ If you plan to use an external WordPress plugin sending email via direct HTTP AP
    ```
 2. **Do not create** `data/wp-content/mu-plugins/wp-notify.php` or `notifier.env`.
 
-### 8. Administration & Update Performance (wp-performance)
-
-To prevent admin dashboard freezing during updates and eliminate network latency on outbound HTTP requests, this repository provides an optional, lightweight must-use plugin: [`examples/data/wp-content/mu-plugins/wp-performance.php.example`](examples/data/wp-content/mu-plugins/wp-performance.php.example).
-
-It addresses two common bottlenecks in containerized WordPress deployments:
-
-1. **Instant Browser Completion on Core & Plugin Updates:** During WordPress core, plugin, and translation updates (`update.php`, `update-core.php`), WordPress finishes writing files and prints success messages, but subsequently triggers post-upgrade hooks (e.g., cache preloading by plugins such as WP Rocket, telemetry reporting, and update verifications) before terminating the request. This keeps the FastCGI connection open, causing the browser tab to hang with a loading spinner for 10–30+ seconds. `wp-performance.php` intercepts `upgrader_process_complete` and `shutdown` at priority `0` to invoke `fastcgi_finish_request()`. This immediately flushes output buffers and terminates the client HTTP connection, letting the browser finish instantly while PHP-FPM executes lingering post-processing tasks in the background.
-2. **Enforced IPv4 Resolution for Outbound Requests:** When communicating with external services (such as `api.wordpress.org`, plugin repositories, licensing servers, or webhooks) that publish IPv6 (AAAA) records, the standard PHP cURL engine attempts an IPv6 connection first, falling back to IPv4 only when IPv6 is unreachable. Because this Docker Compose stack operates exclusively on IPv4 and does not configure container IPv6 routing, forcing IPv4 eliminates unnecessary connection attempts and dual-stack lookup overhead. If your host and Docker daemon are specifically configured with working IPv6 connectivity, this behavior can be easily disabled via the environment variable in `wordpress.env`.
-
-**Installation:**
-
-```bash
-sudo -u ${SITE_USER} mkdir -p /home/${SITE_USER}/data/wp-content/mu-plugins
-sudo -u ${SITE_USER} curl -fsSL ${REPO}/examples/data/wp-content/mu-plugins/wp-performance.php.example \
-  -o /home/${SITE_USER}/data/wp-content/mu-plugins/wp-performance.php
-```
-
-Both optimizations are enabled by default once the plugin is copied. You can adjust behavior in `wordpress.env` without code changes:
-* `WP_PERF_FASTCGI_FINISH=true` — controls early FastCGI connection termination on update pages (set to `false`, `0`, or `off` to disable).
-* `WP_PERF_FORCE_IPV4=true` — controls IPv4 resolution enforcement for outbound cURL requests (defaults to `true`; set to `false`, `0`, or `off` if your Docker environment has native IPv6 networking enabled).
-
-### 9. Memory Limits
-
-If you need to change PHP memory limits, they must be adjusted **consistently** across three places:
-
-1. `wordpress.env` — `WORDPRESS_MEMORY_LIMIT` and `WORDPRESS_MAX_MEMORY_LIMIT`
-2. `docker-compose.yaml` — `mem_limit` for the `wordpress` service
-3. `config/php/www.conf` — FPM pool memory-related directives
-
-### 10. Start the Stack
+### 8. Start the Stack
 
 Pull all images (including `tools` profile services such as `wp-cli`) and start the stack:
 
@@ -339,6 +313,132 @@ To stop and remove containers and networks:
 ```bash
 docker compose -f /home/${SITE_USER}/docker-compose.yaml down
 ```
+
+</details>
+
+---
+
+<details>
+<summary><strong>Must-Use (MU) Plugins</strong></summary>
+
+## Optional Must-Use (MU) Plugins
+
+WordPress automatically loads all PHP files located directly inside `data/wp-content/mu-plugins/` on every request. Must-use plugins cannot be accidentally deactivated in the web dashboard and do not store settings in the database.
+
+This repository provides optional, zero-dependency MU-plugin templates in [`examples/data/wp-content/mu-plugins/`](examples/data/wp-content/mu-plugins/) configured via `/home/${SITE_USER}/wordpress.env`.
+
+Ensure the target directory exists before installing any MU-plugin:
+
+```bash
+SITE_USER=mysite
+sudo -u ${SITE_USER} mkdir -p /home/${SITE_USER}/data/wp-content/mu-plugins
+```
+
+---
+
+### 1. WordPress Update & Network Optimization (`wp-performance.php`)
+
+Source: [`examples/data/wp-content/mu-plugins/wp-performance.php.example`](examples/data/wp-content/mu-plugins/wp-performance.php.example)
+
+* Releases the browser tab immediately once a core, plugin, theme, or translation update finishes in the WordPress dashboard, allowing remaining post-update routines to complete asynchronously in the background without making the user wait.
+* Enforces IPv4 for outbound WordPress HTTP requests so external API calls (`api.wordpress.org`, plugin servers, webhooks) do not hang waiting for unreachable IPv6 timeouts in an IPv4-only Docker network.
+
+Installation:
+
+```bash
+REPO="https://raw.githubusercontent.com/webstudiobond/wordpress-docker/main"
+sudo -u ${SITE_USER} curl -fsSL ${REPO}/examples/data/wp-content/mu-plugins/wp-performance.php.example \
+  -o /home/${SITE_USER}/data/wp-content/mu-plugins/wp-performance.php
+```
+
+Configuration (`wordpress.env` — both enabled by default when installed):
+* `WP_PERF_FASTCGI_FINISH=true` — set to `false`, `0`, or `off` to disable early response flushing.
+* `WP_PERF_FORCE_IPV4=true` — set to `false`, `0`, or `off` if your host and Docker network have native IPv6 connectivity.
+
+---
+
+### 2. Translation Update Control (`wp-translation-updates-disabler.php`)
+
+Source: [`examples/data/wp-content/mu-plugins/wp-translation-updates-disabler.php.example`](examples/data/wp-content/mu-plugins/wp-translation-updates-disabler.php.example)
+
+* Prevents WordPress from silently overwriting custom or corrected localization files (`.po`, `.mo`, `.l10n.php`) in `wp-content/languages/` during background cron runs and plugin updates.
+* Allows disabling automatic background translation updates globally (while keeping manual updates and core security updates intact) or blocking translation updates entirely for specific plugins and themes.
+
+Installation:
+
+```bash
+REPO="https://raw.githubusercontent.com/webstudiobond/wordpress-docker/main"
+sudo -u ${SITE_USER} curl -fsSL ${REPO}/examples/data/wp-content/mu-plugins/wp-translation-updates-disabler.php.example \
+  -o /home/${SITE_USER}/data/wp-content/mu-plugins/wp-translation-updates-disabler.php
+```
+
+Configuration (`wordpress.env`):
+* `WP_TRANSLATION_DISABLE_AUTO_UPDATES=false` — set to `true` (`1`, `on`, `yes`) to block automatic background translation updates while still allowing manual updates.
+* `WP_TRANSLATION_BLOCKED_SLUGS=` — comma-separated list of plugin/theme slugs (e.g., `plugin-slug,theme-slug`) excluded from all translation updates, or `*` to disable translation updates site-wide.
+
+---
+
+### 3. Client-Side Telemetry & Tracker Blocker (`wp-telemetry-blocker.php`)
+
+Source: [`examples/data/wp-content/mu-plugins/wp-telemetry-blocker.php.example`](examples/data/wp-content/mu-plugins/wp-telemetry-blocker.php.example)
+
+* Selectively blocks outbound browser requests from plugins, themes, and scripts only for the external domains or URL substrings you explicitly define in `WP_TELEMETRY_BLOCKED_URLS` (nothing is blocked by default, so required analytics and integrations remain untouched).
+* Unlike ad blockers, DNS sinkholes, or strict `Content-Security-Policy` rules that abort connections and can cause unhandled JavaScript errors or broken UI components, this plugin intercepts matching URLs in the browser and returns a synthetic `200 OK` response so scripts continue working normally without transmitting data externally.
+
+Installation:
+
+```bash
+REPO="https://raw.githubusercontent.com/webstudiobond/wordpress-docker/main"
+sudo -u ${SITE_USER} curl -fsSL ${REPO}/examples/data/wp-content/mu-plugins/wp-telemetry-blocker.php.example \
+  -o /home/${SITE_USER}/data/wp-content/mu-plugins/wp-telemetry-blocker.php
+```
+
+Configuration (`wordpress.env`):
+* `WP_TELEMETRY_BLOCKED_URLS=` — comma-separated list of domains or URL substrings to intercept (e.g., `telemetry.example.com,analytics.example.net/collect`). When empty, the plugin remains inactive.
+
+---
+
+### 4. ACF & Gutenberg Visibility Sync (`wp-acf-editor-control.php`)
+
+Source: [`examples/data/wp-content/mu-plugins/wp-acf-editor-control.php.example`](examples/data/wp-content/mu-plugins/wp-acf-editor-control.php.example)
+
+* In Advanced Custom Fields (ACF), enabling *Hide on screen → Content Editor* hides the Classic Editor, but does not disable the WordPress Block Editor (Gutenberg).
+* Automatically disables Gutenberg on post types and pages (including Polylang translations) where active ACF field groups hide the content editor, caching the rules in `wp_options` when field groups are saved to avoid extra database queries on page load.
+
+Installation:
+
+```bash
+REPO="https://raw.githubusercontent.com/webstudiobond/wordpress-docker/main"
+sudo -u ${SITE_USER} curl -fsSL ${REPO}/examples/data/wp-content/mu-plugins/wp-acf-editor-control.php.example \
+  -o /home/${SITE_USER}/data/wp-content/mu-plugins/wp-acf-editor-control.php
+```
+
+*(Requires no `wordpress.env` variables; works automatically based on ACF field group settings).*
+
+---
+
+### 5. UNIX Socket Mail Dispatcher (`wp-notify.php`)
+
+Source: [`examples/data/wp-content/mu-plugins/wp-notify.php.example`](examples/data/wp-content/mu-plugins/wp-notify.php.example)
+
+* Routes all `wp_mail()` calls over an isolated UNIX socket to [`go-notifier`](https://github.com/webstudiobond/go-notifier) because the hardened PHP-FPM container has no shell or local mail binary (`sendmail`/`postfix`), eliminating the need for third-party SMTP plugins and keeping mail credentials out of the WordPress database.
+
+See [Deployment & Setup — Step 7](#7-mail--push-notifications-go-notifier) for full setup instructions.
+
+</details>
+
+---
+
+<details>
+<summary><strong>Memory Limits</strong></summary>
+
+## Tuning PHP & Container Memory Limits
+
+If your workload requires adjusting PHP memory limits (e.g., for heavy WooCommerce imports or large media processing), limits must be updated **consistently** across three layers so that PHP-FPM workers never exceed the container cgroup ceiling (which would trigger a Linux kernel OOM kill):
+
+1. **`wordpress.env`** — `WORDPRESS_MEMORY_LIMIT` (standard frontend limit) and `WORDPRESS_MAX_MEMORY_LIMIT` (administration and WP-CLI ceiling).
+2. **`docker-compose.yaml`** — `mem_limit` under the `wordpress` (and `wp-cli`) service definition.
+3. **`config/php/www.conf`** — FPM worker pool directives (`pm.max_children`) and `memory_limit` in `config/php/php.ini`.
 
 </details>
 
@@ -508,6 +608,19 @@ wp_mysite plugin update --all --exclude=plugin-name-1,plugin-name-2
 
 # Run command without loading active plugins (prevents crashes from broken plugin code)
 wp_mysite plugin update --all --skip-plugins
+
+# Install or update a plugin from a local zip archive placed in /home/mysite/tmp
+sudo chown mysite:mysite /home/mysite/tmp/plugin-archive.zip
+wp_mysite plugin install /var/www/tmp/plugin-archive.zip --force
+
+# Or install/update and immediately activate the plugin
+wp_mysite plugin install /var/www/tmp/plugin-archive.zip --force --activate
+
+# Force-refresh update check and update translations (core, plugins, themes)
+wp_mysite core check-update --force-check
+wp_mysite language core update
+wp_mysite language plugin update --all
+wp_mysite language theme update --all
 ```
 
 **Package management:**

@@ -1,4 +1,4 @@
-.PHONY: php-lint phpcs phpcs-fix phpstan test php-verify coverage docker-lint compose-validate security-trivy verify
+.PHONY: php-lint phpcs phpcs-fix phpstan test php-verify coverage docker-lint compose-validate security-trivy secrets-scan verify clean
 
 php-lint:
 	find . -path ./vendor -prune -o -type f \( -name "*.php" -o -name "*.php.example" \) -print0 | xargs -0 -n1 php -l
@@ -40,4 +40,10 @@ compose-validate:
 security-trivy:
 	trivy fs --severity CRITICAL,HIGH .
 
-verify: docker-lint php-lint phpcs phpstan test compose-validate security-trivy
+secrets-scan:
+	gitleaks detect --source . --no-git --no-color -v --redact
+
+verify: docker-lint php-lint phpcs phpstan test security-trivy secrets-scan
+
+clean:
+	rm -rf .phpunit.cache .phpcs-cache coverage coverage.xml

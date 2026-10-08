@@ -1,0 +1,275 @@
+<?php
+
+/**
+ * Plugin Name: WP Telemetry Blocker
+ * Description: Intercepts outbound browser telemetry requests (Fetch, XHR, Beacon) matching configured URL patterns with a synthetic 200 OK response.
+ * Version: 1.0.0
+ * Author: underhax
+ */
+
+declare(strict_types=1);
+
+/**
+ * Injects an early client-side interceptor into administration, login, editor,
+ * and authenticated frontend views to neutralize third-party analytics and
+ * telemetry beacons without triggering unhandled JavaScript network errors.
+ */
+final class WpTelemetryBlocker
+{
+    /**
+     * @param (callable(string): (string|false))|null $envGetter
+     * @param (callable(): bool)|null $userLoggedInChecker
+     * @param (callable(): bool)|null $ajaxChecker
+     * @param (callable(): bool)|null $jsonRequestChecker
+     * @param list<string>|null $blockedUrls
+     */
+    public function __construct(
+        private readonly mixed $envGetter = null,
+        private readonly mixed $userLoggedInChecker = null,
+        private readonly mixed $ajaxChecker = null,
+        private readonly mixed $jsonRequestChecker = null,
+        private readonly ?array $blockedUrls = null
+    ) {
+    }
+
+    /**
+     * @return list<string>
+     */
+    public function getBlockedUrls(): array
+    {
+        if ($this->blockedUrls !== null) {
+            return $this->normalizeUrls($this->blockedUrls);
+        }
+
+        $raw = $this->getEnv('WP_TELEMETRY_BLOCKED_URLS');
+        if ($raw === false || trim($raw) === '') {
+            return [];
+        }
+
+        return $this->normalizeUrls(explode(',', $raw));
+    }
+
+    public function shouldInject(): bool
+    {
+        if ($this->getBlockedUrls() === []) {
+            return false;
+        }
+
+        if ($this->isAjaxRequest() || $this->isJsonRequest()) {
+            return false;
+        }
+
+        return true;
+    }
+
+    public function buildScriptTag(): string
+    {
+        $targets = $this->getBlockedUrls();
+        if ($targets === []) {
+            return '';
+        }
+
+        $encodedTargets = json_encode(
+            $targets,
+            JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_UNESCAPED_SLASHES
+        );
+        assert(is_string($encodedTargets));
+
+        $template = <<<'HTML'
+<script id="wp-telemetry-blocker">
+(function() {
+    'use strict';
+    const BLOCKED_TARGETS = %s;
+    const isBlocked = (input) => {
+        let url = '';
+        if (typeof input === 'string') {
+            url = input;
+        } else if (input && typeof input === 'object') {
+            url = input.url || (typeof input.toString === 'function' ? input.toString() : '') || '';
+        }
+        if (!url) {
+            return false;
+        }
+        for (let i = 0, len = BLOCKED_TARGETS.length; i < len; i++) {
+            if (url.indexOf(BLOCKED_TARGETS[i]) !== -1) {
+                return true;
+            }
+        }
+        return false;
+    };
+    if (typeof window.fetch === 'function') {
+        const originalFetch = window.fetch;
+        window.fetch = function(...args) {
+            const [resource] = args;
+            if (isBlocked(resource)) {
+                return Promise.resolve(new Response('{}', {
+                    status: 200,
+                    statusText: 'OK',
+                    headers: { 'Content-Type': 'application/json' }
+                }));
+            }
+            return originalFetch.apply(this, args);
+        };
+    }
+    if (typeof XMLHttpRequest !== 'undefined') {
+        const originalOpen = XMLHttpRequest.prototype.open;
+        XMLHttpRequest.prototype.open = function(...args) {
+            const [, url] = args;
+            this._isBlockedTarget = isBlocked(url);
+            return originalOpen.apply(this, args);
+        };
+        const originalSend = XMLHttpRequest.prototype.send;
+        XMLHttpRequest.prototype.send = function(...args) {
+            if (this._isBlockedTarget) {
+                Object.defineProperties(this, {
+                    readyState: { value: 4, writable: false, configurable: true },
+                    status: { value: 200, writable: false, configurable: true },
+                    statusText: { value: 'OK', writable: false, configurable: true },
+                    responseText: { value: '{}', writable: false, configurable: true },
+                    response: { value: '{}', writable: false, configurable: true }
+                });
+                const self = this;
+                queueMicrotask(() => {
+                    if (typeof self.onreadystatechange === 'function') {
+                        self.onreadystatechange();
+                    }
+                    if (typeof self.onload === 'function') {
+                        self.onload();
+                    }
+                    self.dispatchEvent(new Event('load'));
+                    self.dispatchEvent(new Event('loadend'));
+                });
+                return;
+            }
+            return originalSend.apply(this, args);
+        };
+    }
+    if (typeof navigator !== 'undefined' && typeof navigator.sendBeacon === 'function') {
+        const originalBeacon = navigator.sendBeacon;
+        navigator.sendBeacon = function(...args) {
+            const [url] = args;
+            if (isBlocked(url)) {
+                return true;
+            }
+            return originalBeacon.apply(this, args);
+        };
+    }
+})();
+</script>
+HTML;
+
+        return sprintf($template, $encodedTargets);
+    }
+
+    public function injectSilencer(): void
+    {
+        if (!$this->shouldInject()) {
+            return;
+        }
+
+        echo $this->buildScriptTag() . "\n";
+    }
+
+    public function injectFrontend(): void
+    {
+        if ($this->isUserLoggedIn()) {
+            $this->injectSilencer();
+        }
+    }
+
+    /**
+     * @param (callable(string, callable, int, int): void)|null $hookRegistrar
+     */
+    public function registerHooks(?callable $hookRegistrar = null): void
+    {
+        $registrar = $hookRegistrar;
+        if ($registrar === null && function_exists('add_action')) {
+            $registrar = static function (
+                string $tag,
+                callable $callback,
+                int $priority = 10,
+                int $acceptedArgs = 1
+            ): void {
+                add_action($tag, $callback, $priority, $acceptedArgs);
+            };
+        }
+
+        if ($registrar === null) {
+            return;
+        }
+
+        $registrar('admin_print_scripts', [$this, 'injectSilencer'], 0, 0);
+        $registrar('login_head', [$this, 'injectSilencer'], 0, 0);
+        $registrar('elementor/editor/before_enqueue_scripts', [$this, 'injectSilencer'], 0, 0);
+        $registrar('wp_head', [$this, 'injectFrontend'], 0, 0);
+    }
+
+    /**
+     * @param array<int|string, string> $items
+     * @return list<string>
+     */
+    private function normalizeUrls(array $items): array
+    {
+        $normalized = [];
+        foreach ($items as $item) {
+            $trimmed = trim($item);
+            if ($trimmed !== '' && !in_array($trimmed, $normalized, true)) {
+                $normalized[] = $trimmed;
+            }
+        }
+
+        return $normalized;
+    }
+
+    private function isUserLoggedIn(): bool
+    {
+        if (is_callable($this->userLoggedInChecker)) {
+            return (bool) ($this->userLoggedInChecker)();
+        }
+
+        if (function_exists('is_user_logged_in')) {
+            return is_user_logged_in();
+        }
+
+        return false;
+    }
+
+    private function isAjaxRequest(): bool
+    {
+        if (is_callable($this->ajaxChecker)) {
+            return (bool) ($this->ajaxChecker)();
+        }
+
+        if (function_exists('wp_doing_ajax')) {
+            return wp_doing_ajax();
+        }
+
+        return false;
+    }
+
+    private function isJsonRequest(): bool
+    {
+        if (is_callable($this->jsonRequestChecker)) {
+            return (bool) ($this->jsonRequestChecker)();
+        }
+
+        if (function_exists('wp_is_json_request')) {
+            return wp_is_json_request();
+        }
+
+        return false;
+    }
+
+    private function getEnv(string $name): string|false
+    {
+        if (is_callable($this->envGetter)) {
+            return ($this->envGetter)($name);
+        }
+
+        return getenv($name);
+    }
+}
+
+if (function_exists('add_action')) {
+    (new WpTelemetryBlocker())->registerHooks();
+}

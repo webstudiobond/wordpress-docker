@@ -72,16 +72,16 @@ final class WpConfigTest extends TestCase
         $requiredSecrets = [
             'db_name' => 'test_db',
             'db_user' => 'test_user',
-            'db_password' => 'secret_pass_123',
+            'db_password' => 'dummy_pass',
             'table_prefix' => 'wp_',
-            'auth_key' => 'auth_key_test_val_12345678901234567890',
-            'secure_auth_key' => 'secure_auth_key_test_val_1234567890',
-            'logged_in_key' => 'logged_in_key_test_val_123456789012',
-            'nonce_key' => 'nonce_key_test_val_1234567890123456',
-            'auth_salt' => 'auth_salt_test_val_1234567890123456',
-            'secure_auth_salt' => 'secure_auth_salt_test_val_12345678',
-            'logged_in_salt' => 'logged_in_salt_test_val_1234567890',
-            'nonce_salt' => 'nonce_salt_test_val_12345678901234',
+            'auth_key' => 'dummy_auth_val',
+            'secure_auth_key' => 'dummy_secure_val',
+            'logged_in_key' => 'dummy_logged_val',
+            'nonce_key' => 'dummy_nonce_val',
+            'auth_salt' => 'dummy_auth_salt',
+            'secure_auth_salt' => 'dummy_secure_salt',
+            'logged_in_salt' => 'dummy_logged_salt',
+            'nonce_salt' => 'dummy_nonce_salt',
         ];
 
         $env = [
