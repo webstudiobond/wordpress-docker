@@ -423,3 +423,36 @@ function ensure_youtube_stubs(): void
         }
     }
 }
+
+function ensure_reading_time_stubs(): void
+{
+    if (!function_exists('strip_shortcodes')) {
+        function strip_shortcodes(string $content): string
+        {
+            return (string) preg_replace('/\[\/?[a-zA-Z0-9_-]+[^\]]*\]/', '', $content);
+        }
+    }
+
+    if (!function_exists('get_the_ID')) {
+        function get_the_ID(): int|false
+        {
+            $id = $GLOBALS['test_current_post_id'] ?? false;
+            return is_int($id) ? $id : false;
+        }
+    }
+
+    if (!function_exists('get_post_field')) {
+        function get_post_field(string $field, int $postId): string
+        {
+            $fields = $GLOBALS['test_post_fields'][$postId][$field] ?? '';
+            return is_string($fields) ? $fields : '';
+        }
+    }
+
+    if (!function_exists('add_shortcode')) {
+        function add_shortcode(string $tag, callable $callback): void
+        {
+            $GLOBALS['test_registered_shortcodes'][$tag] = $callback;
+        }
+    }
+}

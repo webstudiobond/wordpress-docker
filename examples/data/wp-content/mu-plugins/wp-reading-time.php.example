@@ -1,0 +1,366 @@
+<?php
+
+/**
+ * Plugin Name: WP Reading Time
+ * Description: Provides a lightweight [reading_time] shortcode with accurate Unicode word counting, customizable pluralization, and optional HTML/SVG markup.
+ * Version: 1.0.0
+ * Author: underhax
+ */
+
+declare(strict_types=1);
+
+/**
+ * Calculates estimated article reading time from raw post content
+ * and renders the [reading_time] shortcode with configurable localization and markup.
+ *
+ * Supported shortcode attributes:
+ * - id:     Target post ID (defaults to current post ID).
+ * - wpm:    Reading speed in words per minute (default: 200).
+ * - approx: Prepend "~ " before the number (default: "true"; set "false" to omit).
+ * - prefix: Optional text prepended before the time (e.g., "Read time:").
+ * - label:  Unit label as a single invariant string ("min") or pipe-separated
+ *           plural forms ("minute|minutes" or "form1|form2|form5").
+ * - min1:   Singular form (1, 21, 31...).
+ * - min2:   Plural form for 2-form languages, or paucal form (2-4, 22-24...) for 3-form languages.
+ * - min3:   Plural form (5-20, 25-30...) for 3-form languages.
+ * - html:   Wrap output in <span class="reading-time"> with __prefix and __value spans (default: "false").
+ * - icon:   Prepend inline SVG timer icon and enable HTML wrapper (default: "false").
+ * - class:  Additional CSS class(es) for the outer <span> wrapper (automatically enables HTML wrapper).
+ *
+ * Usage examples:
+ * - [reading_time]
+ * - [reading_time approx="false" min1="minute" min2="minutes"]
+ * - [reading_time icon="true" prefix="Read time:" min1="minute" min2="minutes"]
+ */
+final class WpReadingTime
+{
+    private const int DEFAULT_WPM = 200;
+    private const string DEFAULT_LABEL = 'min';
+    private const string TIMER_ICON_SVG = '<svg xmlns="http://www.w3.org/2000/svg" width="1em" height="1em"'
+        . ' viewBox="0 0 24 24" class="icon reading-time__icon" aria-hidden="true"><path fill="currentColor"'
+        . ' d="M22 12a10 10 0 0 1-20 0 9.9 9.9 0 0 1 2.93-7.07 1 1 0 1 1 1.41 1.42A7.9 7.9 0 0 0 4 12'
+        . 'a8 8 0 1 0 9-7.93V5a1 1 0 0 1-2 0V3a1 1 0 0 1 1-1 10 10 0 0 1 10 10m-10.71.71a1 1 0 0 0 1.42'
+        . ' 0 1 1 0 0 0 0-1.42L9.18 7.76a1 1 0 1 0-1.42 1.42z"/></svg>';
+    private const string BASE_STYLE_CSS = ':where(.reading-time){'
+        . 'display:inline-flex;flex-direction:row;align-items:center;gap:.35em}';
+    private const string ICON_STYLE_CSS = ':where(.reading-time__icon){width:1em;height:1em;flex-shrink:0}';
+
+    private bool $baseStylePrinted = false;
+    private bool $iconStylePrinted = false;
+
+    /**
+     * @param (callable(string, callable): void)|null $shortcodeAdder
+     * @param (callable(int): string)|null $postContentGetter
+     * @param (callable(): int)|null $postIdResolver
+     */
+    public function __construct(
+        private readonly mixed $shortcodeAdder = null,
+        private readonly mixed $postContentGetter = null,
+        private readonly mixed $postIdResolver = null
+    ) {
+    }
+
+    public function register(): void
+    {
+        $this->addShortcode('reading_time', $this->renderShortcode(...));
+    }
+
+    public function renderShortcode(mixed $atts = []): string
+    {
+        $attributes = is_array($atts) ? $atts : [];
+
+        $postId = isset($attributes['id']) && is_scalar($attributes['id']) && (int) $attributes['id'] > 0
+            ? (int) $attributes['id']
+            : $this->resolveCurrentPostId();
+
+        if ($postId <= 0) {
+            return '';
+        }
+
+        $content = $this->getPostContent($postId);
+        if (trim($content) === '') {
+            return '';
+        }
+
+        $wpm = isset($attributes['wpm']) && is_scalar($attributes['wpm']) && (int) $attributes['wpm'] > 0
+            ? (int) $attributes['wpm']
+            : self::DEFAULT_WPM;
+
+        $minutes = $this->calculateMinutes($content, $wpm);
+        $forms = $this->resolveFormsFromAttributes($attributes);
+        $unit = $this->selectPluralForm($minutes, $forms);
+
+        $approx = $this->parseBoolAttribute($attributes['approx'] ?? null, true);
+        $valueText = ($approx ? '~ ' : '') . $minutes . ' ' . $unit;
+
+        $prefix = isset($attributes['prefix']) && is_scalar($attributes['prefix'])
+            ? trim((string) $attributes['prefix'])
+            : '';
+
+        $showIcon = $this->parseBoolAttribute($attributes['icon'] ?? null, false);
+        $customClass = isset($attributes['class']) && is_scalar($attributes['class'])
+            ? $this->sanitizeClassNames((string) $attributes['class'])
+            : '';
+        $useHtml = $showIcon
+            || $customClass !== ''
+            || $this->parseBoolAttribute($attributes['html'] ?? null, false);
+
+        if (!$useHtml) {
+            return $prefix !== '' ? $prefix . ' ' . $valueText : $valueText;
+        }
+
+        return $this->renderHtmlMarkup($prefix, $valueText, $showIcon, $customClass);
+    }
+
+    public function countWords(string $content): int
+    {
+        if (trim($content) === '') {
+            return 0;
+        }
+
+        $cleaned = (string) preg_replace('/<(script|style)\b[^>]*>.*?<\/\1>/is', ' ', $content);
+
+        if (function_exists('strip_shortcodes')) {
+            $cleaned = strip_shortcodes($cleaned);
+        }
+
+        $cleaned = str_replace(['<', '>'], [' <', '> '], $cleaned);
+        $cleaned = strip_tags($cleaned);
+        $cleaned = html_entity_decode($cleaned, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+
+        return (int) preg_match_all('/[\p{L}\p{N}]+(?:[\'\x{2019}\-][\p{L}\p{N}]+)*/u', $cleaned);
+    }
+
+    public function calculateMinutes(string $content, int $wpm = self::DEFAULT_WPM): int
+    {
+        $effectiveWpm = $wpm > 0 ? $wpm : self::DEFAULT_WPM;
+        $words = $this->countWords($content);
+
+        if ($words <= 0) {
+            return 1;
+        }
+
+        return max(1, (int) ceil($words / $effectiveWpm));
+    }
+
+    /**
+     * @param non-empty-list<string> $forms
+     */
+    public function selectPluralForm(int $minutes, array $forms): string
+    {
+        $count = count($forms);
+        if ($count === 1) {
+            return $forms[0];
+        }
+
+        if ($count === 2) {
+            return $minutes === 1 ? $forms[0] : $forms[1];
+        }
+
+        $mod10 = $minutes % 10;
+        $mod100 = $minutes % 100;
+
+        if ($mod10 === 1 && $mod100 !== 11) {
+            return $forms[0];
+        }
+
+        if ($mod10 >= 2 && $mod10 <= 4 && ($mod100 < 10 || $mod100 >= 20)) {
+            return $forms[1];
+        }
+
+        return $forms[2];
+    }
+
+    private function renderHtmlMarkup(
+        string $prefix,
+        string $valueText,
+        bool $showIcon,
+        string $customClass
+    ): string {
+        $outerClass = 'reading-time' . ($customClass !== '' ? ' ' . $customClass : '');
+        $parts = [];
+
+        if ($showIcon) {
+            $parts[] = self::TIMER_ICON_SVG;
+        }
+
+        if ($prefix !== '') {
+            $parts[] = '<span class="reading-time__prefix">' . $this->escapeHtml($prefix) . '</span>';
+        }
+
+        $parts[] = '<span class="reading-time__value">' . $this->escapeHtml($valueText) . '</span>';
+
+        $markup = '<span class="' . $this->escapeHtml($outerClass) . '">' . implode(' ', $parts) . '</span>';
+        $css = $this->buildStyleBlock($showIcon);
+
+        return $markup . $css;
+    }
+
+    private function buildStyleBlock(bool $showIcon): string
+    {
+        $rules = '';
+
+        if (!$this->baseStylePrinted) {
+            $rules .= self::BASE_STYLE_CSS;
+            $this->baseStylePrinted = true;
+        }
+
+        if ($showIcon && !$this->iconStylePrinted) {
+            $rules .= self::ICON_STYLE_CSS;
+            $this->iconStylePrinted = true;
+        }
+
+        if ($rules === '') {
+            return '';
+        }
+
+        return '<style>' . $rules . '</style>';
+    }
+
+    private function parseBoolAttribute(mixed $value, bool $default): bool
+    {
+        if (!is_scalar($value)) {
+            return $default;
+        }
+
+        $normalized = strtolower(trim((string) $value));
+        if ($normalized === '') {
+            return $default;
+        }
+
+        if (in_array($normalized, ['true', '1', 'yes', 'on'], true)) {
+            return true;
+        }
+
+        if (in_array($normalized, ['false', '0', 'no', 'off'], true)) {
+            return false;
+        }
+
+        return $default;
+    }
+
+    private function sanitizeClassNames(string $raw): string
+    {
+        $cleaned = (string) preg_replace('/[^a-zA-Z0-9_\-\s]/', '', $raw);
+        $cleaned = (string) preg_replace('/\s+/', ' ', trim($cleaned));
+
+        return $cleaned;
+    }
+
+    private function escapeHtml(string $text): string
+    {
+        return htmlspecialchars($text, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+    }
+
+    /**
+     * @param array<int|string, mixed> $attributes
+     * @return non-empty-list<string>
+     */
+    private function resolveFormsFromAttributes(array $attributes): array
+    {
+        $min1 = isset($attributes['min1']) && is_scalar($attributes['min1'])
+            ? trim((string) $attributes['min1'])
+            : '';
+        $min2 = isset($attributes['min2']) && is_scalar($attributes['min2'])
+            ? trim((string) $attributes['min2'])
+            : '';
+        $min3 = isset($attributes['min3']) && is_scalar($attributes['min3'])
+            ? trim((string) $attributes['min3'])
+            : '';
+
+        if ($min1 !== '' && $min2 !== '' && $min3 !== '') {
+            return [$min1, $min2, $min3];
+        }
+
+        if ($min1 !== '' && $min2 !== '') {
+            return [$min1, $min2];
+        }
+
+        if ($min1 !== '') {
+            return [$min1];
+        }
+
+        if (isset($attributes['label']) && is_scalar($attributes['label'])) {
+            $labelRaw = trim((string) $attributes['label']);
+            if ($labelRaw !== '') {
+                return $this->parseLabelForms($labelRaw);
+            }
+        }
+
+        return [self::DEFAULT_LABEL];
+    }
+
+    /**
+     * @return non-empty-list<string>
+     */
+    private function parseLabelForms(string $raw): array
+    {
+        $parts = array_map('trim', explode('|', $raw));
+        $filtered = array_values(array_filter($parts, static fn(string $part): bool => $part !== ''));
+
+        if ($filtered === []) {
+            return [self::DEFAULT_LABEL];
+        }
+
+        return $filtered;
+    }
+
+    private function resolveCurrentPostId(): int
+    {
+        if ($this->postIdResolver !== null) {
+            return ($this->postIdResolver)();
+        }
+
+        if (function_exists('get_the_ID')) {
+            $id = (int) get_the_ID();
+            if ($id > 0) {
+                return $id;
+            }
+        }
+
+        if (isset($GLOBALS['post']) && is_object($GLOBALS['post']) && isset($GLOBALS['post']->ID)) {
+            $id = (int) $GLOBALS['post']->ID;
+            if ($id > 0) {
+                return $id;
+            }
+        }
+
+        if (isset($GLOBALS['post_ID']) && is_scalar($GLOBALS['post_ID'])) {
+            $id = (int) $GLOBALS['post_ID'];
+            if ($id > 0) {
+                return $id;
+            }
+        }
+
+        return 0;
+    }
+
+    private function getPostContent(int $postId): string
+    {
+        if ($this->postContentGetter !== null) {
+            return ($this->postContentGetter)($postId);
+        }
+
+        if (function_exists('get_post_field')) {
+            return (string) get_post_field('post_content', $postId);
+        }
+
+        return '';
+    }
+
+    private function addShortcode(string $tag, callable $callback): void
+    {
+        if ($this->shortcodeAdder !== null) {
+            ($this->shortcodeAdder)($tag, $callback);
+            return;
+        }
+
+        if (function_exists('add_shortcode')) {
+            add_shortcode($tag, $callback);
+        }
+    }
+}
+
+if (defined('ABSPATH')) {
+    (new WpReadingTime())->register();
+}

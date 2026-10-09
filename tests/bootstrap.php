@@ -34,4 +34,7 @@ spl_autoload_register(static function (string $class): void {
     if ($class === 'WpYoutube') {
         require_once __DIR__ . '/../examples/data/wp-content/mu-plugins/wp-youtube.php.example';
     }
+    if ($class === 'WpReadingTime') {
+        require_once __DIR__ . '/../examples/data/wp-content/mu-plugins/wp-reading-time.php.example';
+    }
 });

@@ -77,7 +77,9 @@ Production-ready, fully decoupled, and resource-efficient containerized WordPres
     │   │   ├── wp-acf-editor-control.php
     │   │   ├── wp-post-duplicator.php
     │   │   ├── wp-core-cleanup.php
-    │   │   └── wp-transliterator.php
+    │   │   ├── wp-transliterator.php
+    │   │   ├── wp-youtube.php
+    │   │   └── wp-reading-time.php
     │   ├── uploads/                 # Uploaded media assets
     │   └── ...
     └── ...                          # WordPress core files (auto-populated by init service)
@@ -518,7 +520,30 @@ Configuration (`wordpress.env` — oEmbed parameter cleanup and `youtube-nocooki
 
 ---
 
-### 9. UNIX Socket Mail Dispatcher (`wp-notify.php`)
+### 9. Article Reading Time Shortcode (`wp-reading-time.php`)
+
+Source: [`examples/data/wp-content/mu-plugins/wp-reading-time.php.example`](examples/data/wp-content/mu-plugins/wp-reading-time.php.example)
+
+* Provides a zero-configuration `[reading_time]` shortcode for single post templates (e.g., Elementor Single Post layouts) that reads raw `post_content` directly without triggering recursive `the_content` filters, strips `<script>`/`<style>` blocks and shortcodes, preserves word boundaries between adjacent HTML tags, and counts words across any alphabet using Unicode character properties (`\p{L}`, `\p{N}`).
+* Defaults to `200` words per minute (rounded up to whole minutes, minimum `1`) and `~ 3 min` output (`approx="true"`, `label="min"`), with full shortcode attribute overrides for speed, prefix, invariant label, 2-form (`minute|minutes`), or 3-form (`form1|form2|form5` or `min1`/`min2`/`min3`) pluralization, plus optional `<span class="reading-time">` BEM wrappers (`__prefix`, `__value`), an inline `1em` SVG timer icon (`icon="true"`), and a deduplicated zero-specificity `:where(...)` `<style>` block for baseline flex alignment.
+
+Installation:
+
+```bash
+REPO="https://raw.githubusercontent.com/webstudiobond/wordpress-docker/main"
+sudo -u ${SITE_USER} curl -fsSL ${REPO}/examples/data/wp-content/mu-plugins/wp-reading-time.php.example \
+  -o /home/${SITE_USER}/data/wp-content/mu-plugins/wp-reading-time.php
+```
+
+Shortcode examples (requires no `wordpress.env` variables):
+* `[reading_time]` — outputs plain text `~ 3 min` (default `wpm="200"`, `approx="true"`, `label="min"`).
+* `[reading_time approx="false" min1="minute" min2="minutes"]` — outputs plain text `1 minute` / `3 minutes`.
+* `[reading_time icon="true" prefix="Read time:" min1="minute" min2="minutes"]` — outputs `<span class="reading-time"><svg ... class="icon reading-time__icon" ...></svg> <span class="reading-time__prefix">Read time:</span> <span class="reading-time__value">~ 3 minutes</span></span>`.
+* `[reading_time html="true" class="meta-rt" prefix="Read time:" label="min"]` — outputs `<span class="reading-time meta-rt"><span class="reading-time__prefix">Read time:</span> <span class="reading-time__value">~ 3 min</span></span>`.
+
+---
+
+### 10. UNIX Socket Mail Dispatcher (`wp-notify.php`)
 
 Source: [`examples/data/wp-content/mu-plugins/wp-notify.php.example`](examples/data/wp-content/mu-plugins/wp-notify.php.example)
 
