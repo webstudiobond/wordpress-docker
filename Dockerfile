@@ -2,7 +2,7 @@ FROM wordpress:cli-2.12.0-php8.5@sha256:c522811ac21e737b9e986adfc068bdd085fb5b3b
 
 FROM wordpress:7.1.3-php8.5-fpm-alpine@sha256:a2f288bfcf3cd459873e55f69d2532a729354e74f550105410f401fe4b05ec9e AS wordpress-donor
 
-FROM debian:trixie-slim@sha256:a99cfc517144bc59b1978475ec53b46ecabec7e43635402ee5b77cc54cd1b20a AS base
+FROM debian:trixie-slim@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f AS base
 
 LABEL maintainer="underhax" \
       description="Hardened, zero-network WordPress runtime featuring UNIX domain socket IPC, integrated WP-CLI, Redis/Valkey caching, restricted ImageMagick policies, and AVIF/WebP codecs"
