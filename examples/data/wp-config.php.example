@@ -12,7 +12,7 @@ if (!function_exists('get_docker_secret')) {
     function get_docker_secret(string $name): string
     {
         $secretName = strtolower(str_replace(['WORDPRESS_', 'WP_'], '', $name));
-        $fileEnv = getenv('WORDPRESS_' . strtoupper($secretName) . '_FILE');
+        $fileEnv = getenv('WORDPRESS_' . strtoupper($secretName) . '_FILE', true);
         if ($fileEnv !== false && is_file($fileEnv)) {
             $content = file_get_contents($fileEnv);
             return $content !== false ? rtrim($content, "\r\n") : '';
@@ -36,14 +36,14 @@ if (!function_exists('get_docker_secret')) {
 if (!function_exists('getenv_docker')) {
     function getenv_docker(string $env, string $default = ''): string
     {
-        if ($fileEnv = getenv($env . '_FILE')) {
+        if ($fileEnv = getenv($env . '_FILE', true)) {
             if (is_file($fileEnv)) {
                 $content = file_get_contents($fileEnv);
                 return $content !== false ? rtrim($content, "\r\n") : $default;
             }
             return $default;
         }
-        $val = getenv($env);
+        $val = getenv($env, true);
         return ($val !== false && $val !== '') ? $val : $default;
     }
 }

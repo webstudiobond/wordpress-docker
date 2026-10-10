@@ -3,7 +3,7 @@
 /**
  * Plugin Name: WP Post Duplicator
  * Description: Clones posts, pages, and custom post types with taxonomy terms and metadata.
- * Version: 1.0.0
+ * Version: 1.1.0
  * Author: underhax
  */
 
@@ -103,7 +103,7 @@ final class WpPostDuplicator
         $types = [];
         foreach (explode(',', $trimmed) as $item) {
             $slug = trim($item);
-            if ($slug !== '' && !in_array($slug, $types, true)) {
+            if ($slug !== '' && $slug !== '*' && !in_array($slug, $types, true)) {
                 $types[] = $slug;
             }
         }
@@ -118,12 +118,7 @@ final class WpPostDuplicator
             return false;
         }
 
-        $allowed = $this->getAllowedPostTypes();
-        if (in_array('*', $allowed, true)) {
-            return true;
-        }
-
-        return in_array($normalized, $allowed, true);
+        return in_array($normalized, $this->getAllowedPostTypes(), true);
     }
 
     public function getDuplicateStatus(): string
@@ -233,7 +228,7 @@ final class WpPostDuplicator
             'post_password' => isset($vars['post_password']) && is_string($vars['post_password'])
                 ? $vars['post_password']
                 : '',
-            'post_status' => $this->getDuplicateStatus(),
+            'post_status' => $this->resolveEffectiveDuplicateStatus(),
             'post_title' => $this->slashValue($postTitle),
             'post_type' => $postType,
             'to_ping' => isset($vars['to_ping']) && is_string($vars['to_ping'])
@@ -503,10 +498,40 @@ final class WpPostDuplicator
             }
 
             foreach ($metaValues as $rawValue) {
-                $value = function_exists('maybe_unserialize') ? maybe_unserialize($rawValue) : $rawValue;
+                $value = $this->safeUnserialize($rawValue);
                 add_post_meta($targetPostId, $this->slashValue($metaKey), $this->slashValue($value));
             }
         }
+    }
+
+    private function safeUnserialize(mixed $rawValue): mixed
+    {
+        if (!is_string($rawValue)) {
+            return $rawValue;
+        }
+
+        $trimmed = trim($rawValue);
+        if (preg_match('/^(?:a|s|i|d|b):\d+[:;]|^N;$/', $trimmed) === 1) {
+            $unserialized = @unserialize($trimmed, ['allowed_classes' => false]);
+            if ($unserialized !== false || $trimmed === 'b:0;') {
+                return $unserialized;
+            }
+        }
+
+        return $rawValue;
+    }
+
+    private function resolveEffectiveDuplicateStatus(): string
+    {
+        $status = $this->getDuplicateStatus();
+        if (
+            in_array($status, ['publish', 'private'], true)
+            && !$this->currentUserCan('publish_posts')
+        ) {
+            return 'draft';
+        }
+
+        return $status;
     }
 
     private function slashValue(mixed $value): mixed
@@ -551,7 +576,7 @@ final class WpPostDuplicator
             return ($this->envGetter)($name);
         }
 
-        return getenv($name);
+        return getenv($name, true);
     }
 }
 

@@ -3,7 +3,7 @@
 /**
  * Plugin Name: WP Translation Updates Disabler
  * Description: Controls background translation auto-updates and selectively disables translation updates for configured slugs.
- * Version: 1.0.0
+ * Version: 1.1.0
  * Author: underhax
  */
 
@@ -198,7 +198,7 @@ final class WpTranslationUpdatesDisabler
             return ($this->envGetter)($name);
         }
 
-        return getenv($name);
+        return getenv($name, true);
     }
 }
 

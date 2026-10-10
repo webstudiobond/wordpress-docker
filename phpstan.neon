@@ -13,4 +13,5 @@ parameters:
         - examples/data/wp-content/mu-plugins/wp-transliterator.php.example
         - examples/data/wp-content/mu-plugins/wp-youtube.php.example
         - examples/data/wp-content/mu-plugins/wp-reading-time.php.example
+        - examples/data/wp-content/mu-plugins/wp-snippets.php.example
 

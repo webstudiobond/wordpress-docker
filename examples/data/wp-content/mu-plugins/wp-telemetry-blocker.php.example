@@ -3,7 +3,7 @@
 /**
  * Plugin Name: WP Telemetry Blocker
  * Description: Intercepts outbound browser telemetry requests (Fetch, XHR, Beacon) matching configured URL patterns with a synthetic 200 OK response.
- * Version: 1.0.0
+ * Version: 1.1.0
  * Author: underhax
  */
 
@@ -266,7 +266,7 @@ HTML;
             return ($this->envGetter)($name);
         }
 
-        return getenv($name);
+        return getenv($name, true);
     }
 }
 

@@ -3,7 +3,7 @@
 /**
  * Plugin Name: WP Core Cleanup
  * Description: Removes redundant WordPress head metadata, HTTP headers, emojis, self-pings, and comment spam vectors.
- * Version: 1.0.0
+ * Version: 1.1.0
  * Author: underhax
  */
 
@@ -24,7 +24,6 @@ final class WpCoreCleanup
         'feeds',
         'oembed',
         'dns_prefetch',
-        'profile',
     ];
 
     private const array ALL_COMMENT_CLEANUPS = [
@@ -151,8 +150,20 @@ final class WpCoreCleanup
             return;
         }
 
+        $homeHost = parse_url($homeUrl, PHP_URL_HOST);
+        if (!is_string($homeHost) || $homeHost === '') {
+            return;
+        }
+
+        $normalizedHomeHost = strtolower($homeHost);
+
         foreach ($links as $key => $link) {
-            if (is_string($link) && str_contains($link, $homeUrl)) {
+            if (!is_string($link)) {
+                continue;
+            }
+
+            $linkHost = parse_url($link, PHP_URL_HOST);
+            if (is_string($linkHost) && strtolower($linkHost) === $normalizedHomeHost) {
                 unset($links[$key]);
             }
         }
@@ -164,6 +175,10 @@ final class WpCoreCleanup
      */
     public function filterWpHeaders(array $headers): array
     {
+        if ($this->isPoweredByHidden()) {
+            unset($headers['X-Powered-By'], $headers['x-powered-by']);
+        }
+
         if ($this->isSelfPingDisabled()) {
             unset($headers['X-Pingback'], $headers['x-pingback']);
         }
@@ -182,6 +197,19 @@ final class WpCoreCleanup
         }
 
         return $fields;
+    }
+
+    /**
+     * @param array<string, mixed> $commentData
+     * @return array<string, mixed>
+     */
+    public function filterPreprocessComment(array $commentData): array
+    {
+        if ($this->isCommentCleanupEnabled('url_field')) {
+            $commentData['comment_author_url'] = '';
+        }
+
+        return $commentData;
     }
 
     public function onInit(): void
@@ -261,6 +289,14 @@ final class WpCoreCleanup
     public function registerHooks(): void
     {
         $this->removePoweredByHeader();
+        if ($this->isPoweredByHidden()) {
+            $this->addAction('send_headers', [$this, 'removePoweredByHeader'], 10, 0);
+        }
+
+        if ($this->isPoweredByHidden() || $this->isSelfPingDisabled()) {
+            $this->addFilter('wp_headers', [$this, 'filterWpHeaders'], 10, 1);
+        }
+
         $this->registerHeadTagHooks();
         $this->registerEmojiHooks();
         $this->registerSelfPingHooks();
@@ -315,11 +351,8 @@ final class WpCoreCleanup
 
         if ($this->isHeadTagDisabled('oembed')) {
             $this->removeAction('wp_head', 'wp_oembed_add_discovery_links', 10);
+            $this->removeAction('wp_head', 'wp_oembed_add_host_js', 10);
             $this->addAction('wp_footer', [$this, 'onWpFooter'], 10, 0);
-        }
-
-        if ($this->isHeadTagDisabled('profile')) {
-            $this->removeAction('wp_head', 'profile_link', 10);
         }
     }
 
@@ -334,6 +367,9 @@ final class WpCoreCleanup
         $this->removeAction('wp_print_styles', 'print_emoji_styles', 10);
         $this->removeAction('admin_print_styles', 'print_emoji_styles', 10);
         $this->addFilter('emoji_svg_url', '__return_false', 10, 0);
+        $this->removeFilter('the_content_feed', 'wp_staticize_emoji', 10);
+        $this->removeFilter('comment_text_rss', 'wp_staticize_emoji', 10);
+        $this->removeFilter('wp_mail', 'wp_staticize_emoji_for_email', 10);
     }
 
     private function registerSelfPingHooks(): void
@@ -343,13 +379,13 @@ final class WpCoreCleanup
         }
 
         $this->addAction('pre_ping', [$this, 'disableSelfPing'], 10, 1);
-        $this->addFilter('wp_headers', [$this, 'filterWpHeaders'], 10, 1);
     }
 
     private function registerCommentHooks(): void
     {
         if ($this->isCommentCleanupEnabled('url_field')) {
             $this->addFilter('comment_form_default_fields', [$this, 'filterCommentFormFields'], 10, 1);
+            $this->addFilter('preprocess_comment', [$this, 'filterPreprocessComment'], 10, 1);
         }
 
         if ($this->isCommentCleanupEnabled('make_clickable')) {
@@ -513,7 +549,7 @@ final class WpCoreCleanup
             return ($this->envGetter)($name);
         }
 
-        return getenv($name);
+        return getenv($name, true);
     }
 }
 

@@ -86,6 +86,20 @@ function ensure_acf_stubs(): void
     }
 }
 
+function ensure_post_stubs(): void
+{
+    if (!function_exists('get_post')) {
+        function get_post(int $postId): ?object
+        {
+            $posts = $GLOBALS['test_posts'] ?? [];
+            if (is_array($posts) && isset($posts[$postId]) && is_object($posts[$postId])) {
+                return $posts[$postId];
+            }
+            return null;
+        }
+    }
+}
+
 function ensure_telemetry_stubs(): void
 {
     if (!function_exists('is_user_logged_in')) {
@@ -453,6 +467,179 @@ function ensure_reading_time_stubs(): void
         function add_shortcode(string $tag, callable $callback): void
         {
             $GLOBALS['test_registered_shortcodes'][$tag] = $callback;
+        }
+    }
+}
+
+function ensure_snippets_stubs(): void
+{
+    ensure_wordpress_stubs();
+    ensure_telemetry_stubs();
+
+    if (!function_exists('wp_deregister_script')) {
+        function wp_deregister_script(string $handle): void
+        {
+            $GLOBALS['test_deregistered_scripts'][] = $handle;
+        }
+    }
+
+    if (!function_exists('wp_get_current_user')) {
+        function wp_get_current_user(): object
+        {
+            $user = $GLOBALS['test_current_user'] ?? null;
+            return is_object($user) ? $user : (object) ['roles' => []];
+        }
+    }
+
+    if (!function_exists('wp_is_mobile')) {
+        function wp_is_mobile(): bool
+        {
+            return (bool) ($GLOBALS['test_wp_is_mobile'] ?? false);
+        }
+    }
+
+    if (!function_exists('is_front_page')) {
+        function is_front_page(): bool
+        {
+            return (bool) ($GLOBALS['test_is_front_page'] ?? false);
+        }
+    }
+
+    if (!function_exists('is_home')) {
+        function is_home(): bool
+        {
+            return (bool) ($GLOBALS['test_is_home'] ?? false);
+        }
+    }
+
+    if (!function_exists('is_page')) {
+        function is_page(mixed $page = ''): bool
+        {
+            $GLOBALS['test_last_is_page_arg'] = $page;
+            $val = $GLOBALS['test_is_page'] ?? false;
+            if (is_callable($val)) {
+                return (bool) $val($page);
+            }
+            return (bool) $val;
+        }
+    }
+
+    if (!function_exists('is_single')) {
+        function is_single(mixed $post = ''): bool
+        {
+            $GLOBALS['test_last_is_single_arg'] = $post;
+            $val = $GLOBALS['test_is_single'] ?? false;
+            if (is_callable($val)) {
+                return (bool) $val($post);
+            }
+            return (bool) $val;
+        }
+    }
+
+    if (!function_exists('is_singular')) {
+        function is_singular(mixed $postTypes = ''): bool
+        {
+            $GLOBALS['test_last_is_singular_arg'] = $postTypes;
+            $val = $GLOBALS['test_is_singular'] ?? false;
+            if (is_callable($val)) {
+                return (bool) $val($postTypes);
+            }
+            return (bool) $val;
+        }
+    }
+
+    if (!function_exists('is_archive')) {
+        function is_archive(): bool
+        {
+            return (bool) ($GLOBALS['test_is_archive'] ?? false);
+        }
+    }
+
+    if (!function_exists('is_post_type_archive')) {
+        function is_post_type_archive(mixed $postTypes = ''): bool
+        {
+            $GLOBALS['test_last_is_post_type_archive_arg'] = $postTypes;
+            $val = $GLOBALS['test_is_post_type_archive'] ?? false;
+            if (is_callable($val)) {
+                return (bool) $val($postTypes);
+            }
+            return (bool) $val;
+        }
+    }
+
+    if (!function_exists('is_category')) {
+        function is_category(mixed $category = ''): bool
+        {
+            $GLOBALS['test_last_is_category_arg'] = $category;
+            $val = $GLOBALS['test_is_category'] ?? false;
+            if (is_callable($val)) {
+                return (bool) $val($category);
+            }
+            return (bool) $val;
+        }
+    }
+
+    if (!function_exists('is_tag')) {
+        function is_tag(mixed $tag = ''): bool
+        {
+            $GLOBALS['test_last_is_tag_arg'] = $tag;
+            $val = $GLOBALS['test_is_tag'] ?? false;
+            if (is_callable($val)) {
+                return (bool) $val($tag);
+            }
+            return (bool) $val;
+        }
+    }
+
+    if (!function_exists('is_tax')) {
+        function is_tax(mixed $taxonomy = '', mixed $term = ''): bool
+        {
+            $GLOBALS['test_last_is_tax_args'] = [$taxonomy, $term];
+            $val = $GLOBALS['test_is_tax'] ?? false;
+            if (is_callable($val)) {
+                return (bool) $val($taxonomy, $term);
+            }
+            return (bool) $val;
+        }
+    }
+
+    if (!function_exists('wp_dequeue_style')) {
+        function wp_dequeue_style(string $handle): void
+        {
+            $GLOBALS['test_dequeued_styles'][] = $handle;
+        }
+    }
+
+    if (!function_exists('wp_deregister_style')) {
+        function wp_deregister_style(string $handle): void
+        {
+            $GLOBALS['test_deregistered_styles'][] = $handle;
+        }
+    }
+
+    if (!function_exists('wp_dequeue_script')) {
+        function wp_dequeue_script(string $handle): void
+        {
+            $GLOBALS['test_dequeued_scripts'][] = $handle;
+        }
+    }
+
+    if (!function_exists('get_queried_object')) {
+        function get_queried_object(): mixed
+        {
+            return $GLOBALS['test_queried_object'] ?? false;
+        }
+    }
+
+    if (!function_exists('get_field')) {
+        function get_field(string $selector, mixed $postId = false, bool $formatValue = true): mixed
+        {
+            $GLOBALS['test_last_get_field_args'] = [$selector, $postId, $formatValue];
+            $fields = $GLOBALS['test_acf_fields'] ?? [];
+            if (is_array($fields) && array_key_exists($selector, $fields)) {
+                return $fields[$selector];
+            }
+            return false;
         }
     }
 }

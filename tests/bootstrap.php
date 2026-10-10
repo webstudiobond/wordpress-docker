@@ -37,4 +37,7 @@ spl_autoload_register(static function (string $class): void {
     if ($class === 'WpReadingTime') {
         require_once __DIR__ . '/../examples/data/wp-content/mu-plugins/wp-reading-time.php.example';
     }
+    if ($class === 'WpSnippets') {
+        require_once __DIR__ . '/../examples/data/wp-content/mu-plugins/wp-snippets.php.example';
+    }
 });

@@ -3,7 +3,7 @@
 /**
  * Plugin Name: WP Transliterator
  * Description: Transliterates non-Latin post, page, and term slugs on save and uploaded media filenames.
- * Version: 1.0.0
+ * Version: 1.1.0
  * Author: underhax
  */
 
@@ -807,7 +807,7 @@ final class WpTransliterator
             return ($this->envGetter)($name);
         }
 
-        return getenv($name);
+        return getenv($name, true);
     }
 }
 

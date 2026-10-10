@@ -35,9 +35,9 @@ final class WordPressSync
     {
         $envName = $envValue;
         if ($envName === null) {
-            $envName = getenv('WP_CONTENT_DIR');
+            $envName = getenv('WP_CONTENT_DIR', true);
             if ($envName === false || trim($envName) === '') {
-                $envName = getenv('WP_CONTENT_FOLDERNAME');
+                $envName = getenv('WP_CONTENT_FOLDERNAME', true);
             }
         }
 

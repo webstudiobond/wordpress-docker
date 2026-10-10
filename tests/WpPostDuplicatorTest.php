@@ -132,7 +132,12 @@ final class WpPostDuplicatorTest extends TestCase
                 '_wp_old_slug' => ['old-post-slug'],
                 '_wp_old_date' => ['2025-01-01'],
                 '' => ['ignored'],
-                'custom_key' => ['plain_val', serialize(['nested' => 'val\\1'])],
+                'custom_key' => [
+                    'plain_val',
+                    serialize(['nested' => 'val\\1']),
+                    42,
+                    'O:8:"stdClass":0:{}',
+                ],
                 'invalid_not_array' => 'scalar',
             ],
         ];
@@ -164,10 +169,12 @@ final class WpPostDuplicatorTest extends TestCase
         $this->assertSame('category', $GLOBALS['test_set_terms'][0]['taxonomy']);
         $this->assertSame(['news', 'updates'], $GLOBALS['test_set_terms'][0]['terms']);
 
-        $this->assertCount(2, $GLOBALS['test_added_post_meta']);
+        $this->assertCount(4, $GLOBALS['test_added_post_meta']);
         $this->assertSame('custom_key', $GLOBALS['test_added_post_meta'][0]['meta_key']);
         $this->assertSame('plain_val', $GLOBALS['test_added_post_meta'][0]['meta_value']);
         $this->assertSame(['nested' => 'val\\\\1'], $GLOBALS['test_added_post_meta'][1]['meta_value']);
+        $this->assertSame(42, $GLOBALS['test_added_post_meta'][2]['meta_value']);
+        $this->assertSame('O:8:\\"stdClass\\":0:{}', $GLOBALS['test_added_post_meta'][3]['meta_value']);
 
         $GLOBALS['test_object_taxonomies']['post'] = 'not_an_array';
         $GLOBALS['test_post_meta'][25] = 'not_an_array';
@@ -180,22 +187,32 @@ final class WpPostDuplicatorTest extends TestCase
 
     public function testAllowedPostTypesAndStatusAndAuthorEnvConfigurations(): void
     {
+        /** @var array<string, mixed> $capturedInsert */
+        $capturedInsert = [];
+
         $customTypesDuplicator = new WpPostDuplicator(
             envGetter: static fn(string $name): string => match ($name) {
                 'WP_DUPLICATOR_POST_TYPES' => ' post , bbb-room , , post ',
-                'WP_DUPLICATOR_STATUS' => '  PENDING ',
+                'WP_DUPLICATOR_STATUS' => '  PUBLISH ',
                 'WP_DUPLICATOR_KEEP_AUTHOR' => '0',
                 'WP_DUPLICATOR_CAPABILITY' => ' manage_options ',
                 default => '',
+            },
+            capabilityChecker: static fn(string $cap): bool => $cap !== 'publish_posts',
+            postInserter: static function (array $args) use (&$capturedInsert): int {
+                $capturedInsert = $args;
+                return 88;
             }
         );
 
         $this->assertSame(['post', 'bbb-room'], $customTypesDuplicator->getAllowedPostTypes());
         $this->assertTrue($customTypesDuplicator->isPostTypeAllowed('bbb-room'));
         $this->assertFalse($customTypesDuplicator->isPostTypeAllowed('page'));
-        $this->assertSame('pending', $customTypesDuplicator->getDuplicateStatus());
+        $this->assertSame('publish', $customTypesDuplicator->getDuplicateStatus());
         $this->assertFalse($customTypesDuplicator->shouldKeepAuthor());
         $this->assertSame('manage_options', $customTypesDuplicator->getRequiredCapability());
+        $this->assertSame(88, $customTypesDuplicator->duplicatePost((object) ['ID' => 10, 'post_type' => 'post']));
+        $this->assertSame('draft', $capturedInsert['post_status']);
 
         $wildcardDuplicator = new WpPostDuplicator(
             envGetter: static fn(string $name): string => match ($name) {
@@ -205,10 +222,19 @@ final class WpPostDuplicatorTest extends TestCase
             }
         );
 
-        $this->assertTrue($wildcardDuplicator->isPostTypeAllowed('custom_portfolio'));
+        $this->assertSame([], $wildcardDuplicator->getAllowedPostTypes());
+        $this->assertFalse($wildcardDuplicator->isPostTypeAllowed('custom_portfolio'));
+        $this->assertFalse($wildcardDuplicator->isPostTypeAllowed('*'));
         $this->assertFalse($wildcardDuplicator->isPostTypeAllowed('revision'));
         $this->assertFalse($wildcardDuplicator->isPostTypeAllowed('acf-field-group'));
         $this->assertSame('draft', $wildcardDuplicator->getDuplicateStatus());
+
+        $mixedDuplicator = new WpPostDuplicator(
+            envGetter: static fn(string $name): string => $name === 'WP_DUPLICATOR_POST_TYPES' ? 'post, *, page' : ''
+        );
+        $this->assertSame(['post', 'page'], $mixedDuplicator->getAllowedPostTypes());
+        $this->assertTrue($mixedDuplicator->isPostTypeAllowed('post'));
+        $this->assertFalse($mixedDuplicator->isPostTypeAllowed('*'));
 
         $disabledDuplicator = new WpPostDuplicator(
             envGetter: static fn(string $name): string => $name === 'WP_DUPLICATOR_POST_TYPES' ? 'none' : ''

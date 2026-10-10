@@ -3,7 +3,7 @@
 /**
  * Plugin Name: WP Reading Time
  * Description: Provides a lightweight [reading_time] shortcode with accurate Unicode word counting, customizable pluralization, and optional HTML/SVG markup.
- * Version: 1.0.0
+ * Version: 1.1.0
  * Author: underhax
  */
 
@@ -106,7 +106,9 @@ final class WpReadingTime
             || $this->parseBoolAttribute($attributes['html'] ?? null, false);
 
         if (!$useHtml) {
-            return $prefix !== '' ? $prefix . ' ' . $valueText : $valueText;
+            $plainText = $prefix !== '' ? $prefix . ' ' . $valueText : $valueText;
+
+            return $this->escapeHtml($plainText);
         }
 
         return $this->renderHtmlMarkup($prefix, $valueText, $showIcon, $customClass);

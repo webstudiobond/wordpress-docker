@@ -119,6 +119,13 @@ final class WpReadingTimeTest extends TestCase
             '~ 3 минуты',
             $plugin->renderShortcode(['label' => 'минута|минуты|минут'])
         );
+        $this->assertSame(
+            '&lt;script&gt;alert(1)&lt;/script&gt; ~ 3 &lt;img src=x onerror=alert(1)&gt;',
+            $plugin->renderShortcode([
+                'prefix' => '<script>alert(1)</script>',
+                'label' => '<img src=x onerror=alert(1)>',
+            ])
+        );
         $this->assertSame('', $plugin->renderShortcode(['id' => 999]));
     }
 

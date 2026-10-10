@@ -1,0 +1,873 @@
+<?php
+
+/**
+ * Plugin Name: WP Snippets & Asset Control
+ * Description: Provides environment-driven conditional GTM injection, font/image preloading, style/script deregistration, and safe file-based HTML/CSS/JS snippets without database queries or WordPress HTML fingerprints.
+ * Version: 1.0.0
+ * Author: underhax
+ */
+
+declare(strict_types=1);
+
+/**
+ * Orchestrates conditional frontend asset preloading, style/script deregistration,
+ * Google Tag Manager injection, and file-based HTML/CSS/JS snippet rendering.
+ */
+final class WpSnippets
+{
+    public const string SNIPPETS_DIR = '/etc/wordpress/snippets';
+    private const int MAX_SNIPPET_BYTES = 262144;
+
+    /** @var list<array{target: string, audience: string, roles: list<string>, device: string, editor: bool, positiveAcf: list<string>, negativeAcf: list<string>, positiveLocations: list<array{type: string, args: list<int|string>, taxonomy: string}>, negativeLocations: list<array{type: string, args: list<int|string>, taxonomy: string}>}> */
+    private readonly array $gtmRules;
+
+    /** @var list<array{target: string, audience: string, roles: list<string>, device: string, editor: bool, positiveAcf: list<string>, negativeAcf: list<string>, positiveLocations: list<array{type: string, args: list<int|string>, taxonomy: string}>, negativeLocations: list<array{type: string, args: list<int|string>, taxonomy: string}>}> */
+    private readonly array $fontPreloadRules;
+
+    /** @var list<array{target: string, audience: string, roles: list<string>, device: string, editor: bool, positiveAcf: list<string>, negativeAcf: list<string>, positiveLocations: list<array{type: string, args: list<int|string>, taxonomy: string}>, negativeLocations: list<array{type: string, args: list<int|string>, taxonomy: string}>}> */
+    private readonly array $fontStyleRules;
+
+    /** @var list<array{target: string, audience: string, roles: list<string>, device: string, editor: bool, positiveAcf: list<string>, negativeAcf: list<string>, positiveLocations: list<array{type: string, args: list<int|string>, taxonomy: string}>, negativeLocations: list<array{type: string, args: list<int|string>, taxonomy: string}>}> */
+    private readonly array $imagePreloadRules;
+
+    /** @var list<array{target: string, audience: string, roles: list<string>, device: string, editor: bool, positiveAcf: list<string>, negativeAcf: list<string>, positiveLocations: list<array{type: string, args: list<int|string>, taxonomy: string}>, negativeLocations: list<array{type: string, args: list<int|string>, taxonomy: string}>}> */
+    private readonly array $deregisterStyleRules;
+
+    /** @var list<array{target: string, audience: string, roles: list<string>, device: string, editor: bool, positiveAcf: list<string>, negativeAcf: list<string>, positiveLocations: list<array{type: string, args: list<int|string>, taxonomy: string}>, negativeLocations: list<array{type: string, args: list<int|string>, taxonomy: string}>}> */
+    private readonly array $deregisterScriptRules;
+
+    /** @var list<array{target: string, audience: string, roles: list<string>, device: string, editor: bool, positiveAcf: list<string>, negativeAcf: list<string>, positiveLocations: list<array{type: string, args: list<int|string>, taxonomy: string}>, negativeLocations: list<array{type: string, args: list<int|string>, taxonomy: string}>}> */
+    private readonly array $headSnippetRules;
+
+    /** @var list<array{target: string, audience: string, roles: list<string>, device: string, editor: bool, positiveAcf: list<string>, negativeAcf: list<string>, positiveLocations: list<array{type: string, args: list<int|string>, taxonomy: string}>, negativeLocations: list<array{type: string, args: list<int|string>, taxonomy: string}>}> */
+    private readonly array $bodySnippetRules;
+
+    /** @var list<array{target: string, audience: string, roles: list<string>, device: string, editor: bool, positiveAcf: list<string>, negativeAcf: list<string>, positiveLocations: list<array{type: string, args: list<int|string>, taxonomy: string}>, negativeLocations: list<array{type: string, args: list<int|string>, taxonomy: string}>}> */
+    private readonly array $footerSnippetRules;
+
+    private readonly string $snippetsDir;
+
+    /**
+     * @param (callable(string): (string|false))|null $envReader
+     * @param (callable(string): (string|false))|null $fileReader
+     * @param (callable(string): void)|null $outputWriter
+     * @param string|null $snippetsDir
+     */
+    public function __construct(
+        private readonly mixed $envReader = null,
+        private readonly mixed $fileReader = null,
+        private readonly mixed $outputWriter = null,
+        ?string $snippetsDir = null
+    ) {
+        $this->snippetsDir = $snippetsDir ?? self::SNIPPETS_DIR;
+        $this->gtmRules = $this->parseGtmRules($this->readEnv('WP_GTM_ID'));
+        $this->fontPreloadRules = $this->parseRules($this->readEnv('WP_FONTS_PRELOAD'), 'all');
+        $this->fontStyleRules = $this->parseRules($this->readEnv('WP_FONTS_STYLES'), 'all');
+        $this->imagePreloadRules = $this->parseRules($this->readEnv('WP_PRELOAD_IMAGES'), 'all');
+        $this->deregisterStyleRules = $this->parseRules($this->readEnv('WP_DEREGISTER_STYLES'), 'all');
+        $this->deregisterScriptRules = $this->parseRules($this->readEnv('WP_DEREGISTER_SCRIPTS'), 'all');
+        $this->headSnippetRules = $this->parseRules($this->readEnv('WP_SNIPPETS_HEAD'), 'all');
+        $this->bodySnippetRules = $this->parseRules($this->readEnv('WP_SNIPPETS_BODY'), 'all');
+        $this->footerSnippetRules = $this->parseRules($this->readEnv('WP_SNIPPETS_FOOTER'), 'all');
+    }
+
+    public function register(): void
+    {
+        if (!function_exists('add_action')) {
+            return;
+        }
+
+        if (
+            $this->gtmRules !== []
+            || $this->fontPreloadRules !== []
+            || $this->fontStyleRules !== []
+            || $this->imagePreloadRules !== []
+        ) {
+            add_action('wp_head', $this->renderHeadAssets(...), 2);
+        }
+
+        if ($this->headSnippetRules !== []) {
+            add_action('wp_head', $this->renderHeadSnippets(...), 99);
+        }
+
+        if ($this->gtmRules !== [] || $this->bodySnippetRules !== []) {
+            add_action('wp_body_open', $this->renderBodyOpen(...), 20);
+        }
+
+        if ($this->footerSnippetRules !== []) {
+            add_action('wp_footer', $this->renderFooterSnippets(...), 99);
+        }
+
+        if ($this->deregisterStyleRules !== []) {
+            add_action('wp_enqueue_scripts', $this->deregisterStyles(...), 100);
+            add_action('wp_print_styles', $this->deregisterStyles(...), PHP_INT_MAX - 1);
+        }
+
+        if ($this->deregisterScriptRules !== []) {
+            add_action('wp_enqueue_scripts', $this->deregisterScripts(...), 100);
+            add_action('wp_print_scripts', $this->deregisterScripts(...), PHP_INT_MAX - 1);
+        }
+
+        if ($this->hasEditorRules($this->fontPreloadRules) || $this->hasEditorRules($this->fontStyleRules)) {
+            add_action('admin_head', $this->renderEditorFonts(...), 5);
+            add_action('elementor/editor/after_enqueue_styles', $this->renderEditorFonts(...), 5);
+            add_action('elementor/preview/enqueue_styles', $this->renderEditorFonts(...), 5);
+        }
+    }
+
+    public function renderHeadAssets(): void
+    {
+        $chunks = [];
+
+        foreach ($this->fontPreloadRules as $rule) {
+            if ($this->matchesRule($rule)) {
+                $tag = $this->buildFontPreloadTag($rule['target']);
+                if ($tag !== '') {
+                    $chunks[] = $tag;
+                }
+            }
+        }
+
+        foreach ($this->fontStyleRules as $rule) {
+            if ($this->matchesRule($rule)) {
+                $tag = $this->buildFontStyleTag($rule['target']);
+                if ($tag !== '') {
+                    $chunks[] = $tag;
+                }
+            }
+        }
+
+        foreach ($this->imagePreloadRules as $rule) {
+            if ($this->matchesRule($rule)) {
+                $tag = $this->buildImagePreloadTag($rule['target']);
+                if ($tag !== '') {
+                    $chunks[] = $tag;
+                }
+            }
+        }
+
+        foreach ($this->gtmRules as $rule) {
+            if ($this->matchesRule($rule)) {
+                $chunks[] = $this->buildGtmHeadMarkup($rule['target']);
+            }
+        }
+
+        if ($chunks !== []) {
+            $this->writeOutput(implode("\n", $chunks) . "\n");
+        }
+    }
+
+    public function renderEditorFonts(): void
+    {
+        $chunks = [];
+
+        foreach ($this->fontPreloadRules as $rule) {
+            if ($rule['editor']) {
+                $tag = $this->buildFontPreloadTag($rule['target']);
+                if ($tag !== '') {
+                    $chunks[] = $tag;
+                }
+            }
+        }
+
+        foreach ($this->fontStyleRules as $rule) {
+            if ($rule['editor']) {
+                $tag = $this->buildFontStyleTag($rule['target']);
+                if ($tag !== '') {
+                    $chunks[] = $tag;
+                }
+            }
+        }
+
+        if ($chunks !== []) {
+            $this->writeOutput(implode("\n", $chunks) . "\n");
+        }
+    }
+
+    public function renderHeadSnippets(): void
+    {
+        $this->renderSnippetRules($this->headSnippetRules);
+    }
+
+    public function renderBodyOpen(): void
+    {
+        $chunks = [];
+
+        foreach ($this->gtmRules as $rule) {
+            if ($this->matchesRule($rule)) {
+                $chunks[] = $this->buildGtmBodyMarkup($rule['target']);
+            }
+        }
+
+        foreach ($this->bodySnippetRules as $rule) {
+            if ($this->matchesRule($rule)) {
+                $snippet = $this->loadSnippetMarkup($rule['target']);
+                if ($snippet !== '') {
+                    $chunks[] = $snippet;
+                }
+            }
+        }
+
+        if ($chunks !== []) {
+            $this->writeOutput(implode("\n", $chunks) . "\n");
+        }
+    }
+
+    public function renderFooterSnippets(): void
+    {
+        $this->renderSnippetRules($this->footerSnippetRules);
+    }
+
+    public function deregisterStyles(): void
+    {
+        foreach ($this->deregisterStyleRules as $rule) {
+            if (!$this->matchesRule($rule)) {
+                continue;
+            }
+
+            foreach ($this->splitCsv($rule['target']) as $handle) {
+                if (function_exists('wp_dequeue_style')) {
+                    wp_dequeue_style($handle);
+                }
+                if (function_exists('wp_deregister_style')) {
+                    wp_deregister_style($handle);
+                }
+            }
+        }
+    }
+
+    public function deregisterScripts(): void
+    {
+        foreach ($this->deregisterScriptRules as $rule) {
+            if (!$this->matchesRule($rule)) {
+                continue;
+            }
+
+            foreach ($this->splitCsv($rule['target']) as $handle) {
+                if (function_exists('wp_dequeue_script')) {
+                    wp_dequeue_script($handle);
+                }
+                if (function_exists('wp_deregister_script')) {
+                    wp_deregister_script($handle);
+                }
+            }
+        }
+    }
+
+    /**
+     * @param list<array{target: string, audience: string, roles: list<string>, device: string, editor: bool, positiveAcf: list<string>, negativeAcf: list<string>, positiveLocations: list<array{type: string, args: list<int|string>, taxonomy: string}>, negativeLocations: list<array{type: string, args: list<int|string>, taxonomy: string}>}> $rules
+     */
+    private function renderSnippetRules(array $rules): void
+    {
+        $chunks = [];
+
+        foreach ($rules as $rule) {
+            if (!$this->matchesRule($rule)) {
+                continue;
+            }
+
+            $snippet = $this->loadSnippetMarkup($rule['target']);
+            if ($snippet !== '') {
+                $chunks[] = $snippet;
+            }
+        }
+
+        if ($chunks !== []) {
+            $this->writeOutput(implode("\n", $chunks) . "\n");
+        }
+    }
+
+    private function loadSnippetMarkup(string $filename): string
+    {
+        $trimmed = trim($filename);
+        if (
+            preg_match('/^[a-zA-Z0-9][a-zA-Z0-9._-]*\.(?:html|css|js)$/i', $trimmed) !== 1
+            || str_contains($trimmed, '..')
+        ) {
+            return '';
+        }
+
+        $rawContent = $this->readFile($this->snippetsDir . '/' . $trimmed);
+        if ($rawContent === false) {
+            return '';
+        }
+
+        $content = trim($rawContent);
+        if ($content === '') {
+            return '';
+        }
+
+        $extension = strtolower(pathinfo($trimmed, PATHINFO_EXTENSION));
+        if ($extension === 'html') {
+            return $content;
+        }
+
+        $neutralId = $this->deriveNeutralId($trimmed);
+
+        if ($extension === 'css') {
+            if (stripos($content, '</style') !== false) {
+                return '';
+            }
+
+            return '<style id="' . $this->escapeAttr($neutralId) . '">' . "\n"
+                . $content . "\n"
+                . '</style>';
+        }
+
+        if (stripos($content, '</script') !== false || str_contains($content, '<!--')) {
+            return '';
+        }
+
+        return '<script id="' . $this->escapeAttr($neutralId) . '">' . "\n"
+            . $content . "\n"
+            . '</script>';
+    }
+
+    private function buildFontPreloadTag(string $url): string
+    {
+        $cleanUrl = $this->sanitizeUrlPath($url);
+        if ($cleanUrl === '') {
+            return '';
+        }
+
+        $pathOnly = (string) strtok($cleanUrl, '?#');
+        $ext = strtolower(pathinfo($pathOnly, PATHINFO_EXTENSION));
+        $mimeType = match ($ext) {
+            'woff' => 'font/woff',
+            'ttf' => 'font/ttf',
+            'otf' => 'font/otf',
+            default => 'font/woff2',
+        };
+
+        return '<link rel="preload" as="font" href="' . $this->escapeAttr($cleanUrl)
+            . '" type="' . $mimeType . '" crossorigin>';
+    }
+
+    private function buildFontStyleTag(string $url): string
+    {
+        $cleanUrl = $this->sanitizeUrlPath($url);
+        if ($cleanUrl === '') {
+            return '';
+        }
+
+        $pathOnly = (string) strtok($cleanUrl, '?#');
+        $neutralId = $this->deriveNeutralId(basename($pathOnly));
+
+        return '<link rel="stylesheet" id="' . $this->escapeAttr($neutralId)
+            . '" href="' . $this->escapeAttr($cleanUrl) . '" media="all">';
+    }
+
+    private function buildImagePreloadTag(string $url): string
+    {
+        $cleanUrl = $this->sanitizeUrlPath($url);
+        if ($cleanUrl === '') {
+            return '';
+        }
+
+        return '<link rel="preload" as="image" href="' . $this->escapeAttr($cleanUrl) . '">';
+    }
+
+    private function buildGtmHeadMarkup(string $gtmId): string
+    {
+        $escapedId = $this->escapeAttr($gtmId);
+
+        return '<link rel="preconnect" href="https://www.googletagmanager.com" crossorigin>' . "\n"
+            . "<script>(function(w,d,s,l,i){w[l]=w[l]||[];w[l].push({'gtm.start':"
+            . "new Date().getTime(),event:'gtm.js'});var f=d.getElementsByTagName(s)[0],"
+            . "j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src="
+            . "'https://www.googletagmanager.com/gtm.js?id='+i+dl;f.parentNode.insertBefore(j,f);"
+            . "})(window,document,'script','dataLayer','" . $escapedId . "');</script>";
+    }
+
+    private function buildGtmBodyMarkup(string $gtmId): string
+    {
+        $escapedId = $this->escapeAttr($gtmId);
+
+        return '<noscript><iframe src="https://www.googletagmanager.com/ns.html?id=' . $escapedId
+            . '" height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>';
+    }
+
+    private function deriveNeutralId(string $filename): string
+    {
+        $base = pathinfo($filename, PATHINFO_FILENAME);
+        $sanitized = (string) preg_replace('/[^a-zA-Z0-9_-]/', '-', $base);
+        $sanitized = (string) preg_replace('/^(?:wp|wordpress)[-_]+/i', '', $sanitized);
+        $sanitized = trim((string) preg_replace('/-+/', '-', $sanitized), '-_');
+
+        if ($sanitized === '' || strtolower($sanitized) === 'wp' || strtolower($sanitized) === 'wordpress') {
+            return 'asset-snippet';
+        }
+
+        return strtolower($sanitized);
+    }
+
+    private function sanitizeUrlPath(string $url): string
+    {
+        $trimmed = trim($url);
+        if (
+            $trimmed === ''
+            || str_contains($trimmed, '..')
+            || preg_match('/[\s\x00-\x1F\x7F<>"\'`\\\\]/', $trimmed) === 1
+        ) {
+            return '';
+        }
+
+        $isRootRelative = str_starts_with($trimmed, '/') && !str_starts_with($trimmed, '//');
+        $isHttpsUrl = preg_match('#^https://[a-zA-Z0-9]#i', $trimmed) === 1;
+
+        if (!$isRootRelative && !$isHttpsUrl) {
+            return '';
+        }
+
+        return $trimmed;
+    }
+
+    private function escapeAttr(string $value): string
+    {
+        return htmlspecialchars($value, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+    }
+
+    /**
+     * @param list<array{target: string, audience: string, roles: list<string>, device: string, editor: bool, positiveAcf: list<string>, negativeAcf: list<string>, positiveLocations: list<array{type: string, args: list<int|string>, taxonomy: string}>, negativeLocations: list<array{type: string, args: list<int|string>, taxonomy: string}>}> $rules
+     */
+    private function hasEditorRules(array $rules): bool
+    {
+        foreach ($rules as $rule) {
+            if ($rule['editor']) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * @return list<array{target: string, audience: string, roles: list<string>, device: string, editor: bool, positiveAcf: list<string>, negativeAcf: list<string>, positiveLocations: list<array{type: string, args: list<int|string>, taxonomy: string}>, negativeLocations: list<array{type: string, args: list<int|string>, taxonomy: string}>}>
+     */
+    private function parseGtmRules(?string $raw): array
+    {
+        $parsed = $this->parseRules($raw, 'guest');
+        $valid = [];
+
+        foreach ($parsed as $rule) {
+            $candidate = strtoupper(trim($rule['target']));
+            if (preg_match('/^GTM-[A-Z0-9]+$/', $candidate) !== 1) {
+                continue;
+            }
+
+            $rule['target'] = $candidate;
+            $valid[] = $rule;
+        }
+
+        return $valid;
+    }
+
+    /**
+     * @return list<array{target: string, audience: string, roles: list<string>, device: string, editor: bool, positiveAcf: list<string>, negativeAcf: list<string>, positiveLocations: list<array{type: string, args: list<int|string>, taxonomy: string}>, negativeLocations: list<array{type: string, args: list<int|string>, taxonomy: string}>}>
+     */
+    private function parseRules(?string $raw, string $defaultAudience): array
+    {
+        if ($raw === null || trim($raw) === '') {
+            return [];
+        }
+
+        $entries = explode(';', $raw);
+        $rules = [];
+
+        foreach ($entries as $entry) {
+            $trimmedEntry = trim($entry);
+            if ($trimmedEntry === '') {
+                continue;
+            }
+
+            $parts = explode('|', $trimmedEntry);
+            $target = trim($parts[0]);
+            if ($target === '') {
+                continue;
+            }
+
+            $audience = $defaultAudience;
+            $roles = [];
+            $device = 'all';
+            $editor = false;
+            $positiveAcf = [];
+            $negativeAcf = [];
+            $positiveLocations = [];
+            $negativeLocations = [];
+
+            $count = count($parts);
+            for ($i = 1; $i < $count; $i++) {
+                $token = trim($parts[$i]);
+                if ($token === '') {
+                    continue;
+                }
+
+                $lower = strtolower($token);
+
+                if (in_array($lower, ['all', 'guest', 'auth'], true)) {
+                    $audience = $lower;
+                    continue;
+                }
+
+                if (str_starts_with($lower, 'role:')) {
+                    $parsedRoles = $this->splitCsv(substr($lower, 5));
+                    if ($parsedRoles !== []) {
+                        $audience = 'role';
+                        $roles = array_values(array_unique(array_merge($roles, $parsedRoles)));
+                    }
+                    continue;
+                }
+
+                if (in_array($lower, ['desktop', 'mobile'], true)) {
+                    $device = $lower;
+                    continue;
+                }
+
+                if ($lower === 'editor') {
+                    $editor = true;
+                    continue;
+                }
+
+                $negated = str_starts_with($token, '!');
+                $cleanToken = $negated ? trim(substr($token, 1)) : $token;
+
+                if (str_starts_with(strtolower($cleanToken), 'acf:')) {
+                    foreach ($this->splitCsv(substr($cleanToken, 4)) as $field) {
+                        if (preg_match('/^[a-zA-Z0-9_-]+$/', $field) !== 1) {
+                            continue;
+                        }
+                        if ($negated) {
+                            $negativeAcf[] = $field;
+                        } else {
+                            $positiveAcf[] = $field;
+                        }
+                    }
+                    $negativeAcf = array_values(array_unique($negativeAcf));
+                    $positiveAcf = array_values(array_unique($positiveAcf));
+                    continue;
+                }
+
+                $location = $this->parseLocationToken($cleanToken);
+
+                if ($location === null) {
+                    continue;
+                }
+
+                if ($negated) {
+                    $negativeLocations[] = $location;
+                } else {
+                    $positiveLocations[] = $location;
+                }
+            }
+
+            $rules[] = [
+                'target' => $target,
+                'audience' => $audience,
+                'roles' => $roles,
+                'device' => $device,
+                'editor' => $editor,
+                'positiveAcf' => $positiveAcf,
+                'negativeAcf' => $negativeAcf,
+                'positiveLocations' => $positiveLocations,
+                'negativeLocations' => $negativeLocations,
+            ];
+        }
+
+        return $rules;
+    }
+
+    /**
+     * @return array{type: string, args: list<int|string>, taxonomy: string}|null
+     */
+    private function parseLocationToken(string $token): ?array
+    {
+        if ($token === '') {
+            return null;
+        }
+
+        $segments = explode(':', $token, 3);
+        $type = strtolower(trim($segments[0]));
+
+        if (!in_array($type, ['front', 'home', 'page', 'single', 'singular', 'archive', 'category', 'tag', 'tax'], true)) {
+            return null;
+        }
+
+        if ($type === 'tax') {
+            $taxonomy = isset($segments[1]) ? trim($segments[1]) : '';
+            $termsRaw = $segments[2] ?? '';
+            return [
+                'type' => 'tax',
+                'taxonomy' => $taxonomy,
+                'args' => $this->parseTypedTargets($termsRaw),
+            ];
+        }
+
+        $rawArgs = $segments[1] ?? '';
+
+        return [
+            'type' => $type,
+            'taxonomy' => '',
+            'args' => $this->parseTypedTargets($rawArgs),
+        ];
+    }
+
+    /**
+     * @return list<int|string>
+     */
+    private function parseTypedTargets(string $csv): array
+    {
+        $items = $this->splitCsv($csv);
+        $result = [];
+
+        foreach ($items as $item) {
+            if (ctype_digit($item)) {
+                $intVal = (int) $item;
+                if ($intVal > 0) {
+                    $result[] = $intVal;
+                }
+            } else {
+                $result[] = $item;
+            }
+        }
+
+        return $result;
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function splitCsv(string $csv): array
+    {
+        if (trim($csv) === '') {
+            return [];
+        }
+
+        $parts = explode(',', $csv);
+        $items = [];
+
+        foreach ($parts as $part) {
+            $trimmed = trim($part);
+            if ($trimmed !== '') {
+                $items[] = $trimmed;
+            }
+        }
+
+        return $items;
+    }
+
+    /**
+     * @param array{target: string, audience: string, roles: list<string>, device: string, editor: bool, positiveAcf: list<string>, negativeAcf: list<string>, positiveLocations: list<array{type: string, args: list<int|string>, taxonomy: string}>, negativeLocations: list<array{type: string, args: list<int|string>, taxonomy: string}>} $rule
+     */
+    private function matchesRule(array $rule): bool
+    {
+        if (!$this->matchesAudience($rule['audience'], $rule['roles'])) {
+            return false;
+        }
+
+        if (!$this->matchesDevice($rule['device'])) {
+            return false;
+        }
+
+        if (!$this->matchesAcf($rule['positiveAcf'], $rule['negativeAcf'])) {
+            return false;
+        }
+
+        foreach ($rule['negativeLocations'] as $negLoc) {
+            if ($this->matchesLocation($negLoc)) {
+                return false;
+            }
+        }
+
+        if ($rule['positiveLocations'] === []) {
+            return true;
+        }
+
+        foreach ($rule['positiveLocations'] as $posLoc) {
+            if ($this->matchesLocation($posLoc)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * @param list<string> $positiveAcf
+     * @param list<string> $negativeAcf
+     */
+    private function matchesAcf(array $positiveAcf, array $negativeAcf): bool
+    {
+        foreach ($negativeAcf as $field) {
+            if ($this->isAcfFieldTruthy($field)) {
+                return false;
+            }
+        }
+
+        if ($positiveAcf === []) {
+            return true;
+        }
+
+        foreach ($positiveAcf as $field) {
+            if ($this->isAcfFieldTruthy($field)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function isAcfFieldTruthy(string $field): bool
+    {
+        if (!function_exists('get_field')) {
+            return false;
+        }
+
+        $target = function_exists('get_queried_object') ? get_queried_object() : false;
+
+        return (bool) get_field($field, is_object($target) ? $target : false, false);
+    }
+
+    /**
+     * @param list<string> $allowedRoles
+     */
+    private function matchesAudience(string $audience, array $allowedRoles): bool
+    {
+        if ($audience === 'all') {
+            return true;
+        }
+
+        $loggedIn = function_exists('is_user_logged_in') && is_user_logged_in();
+
+        if ($audience === 'guest') {
+            return !$loggedIn;
+        }
+
+        if ($audience === 'auth') {
+            return $loggedIn;
+        }
+
+        if (!$loggedIn || !function_exists('wp_get_current_user')) {
+            return false;
+        }
+
+        $user = wp_get_current_user();
+        if (!is_object($user) || !property_exists($user, 'roles') || !is_array($user->roles)) {
+            return false;
+        }
+
+        foreach ($user->roles as $userRole) {
+            if (is_string($userRole) && in_array(strtolower($userRole), $allowedRoles, true)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function matchesDevice(string $device): bool
+    {
+        if ($device === 'all') {
+            return true;
+        }
+
+        $isMobile = function_exists('wp_is_mobile') && wp_is_mobile();
+
+        return $device === 'mobile' ? $isMobile : !$isMobile;
+    }
+
+    /**
+     * @param array{type: string, args: list<int|string>, taxonomy: string} $location
+     */
+    private function matchesLocation(array $location): bool
+    {
+        $type = $location['type'];
+        $args = $location['args'];
+
+        return match ($type) {
+            'front' => function_exists('is_front_page') && is_front_page(),
+            'home' => function_exists('is_home') && is_home(),
+            'page' => function_exists('is_page') && ($args === [] ? is_page() : is_page($args)),
+            'single' => function_exists('is_single') && ($args === [] ? is_single() : is_single($args)),
+            'singular' => function_exists('is_singular') && ($args === [] ? is_singular() : is_singular($args)),
+            'archive' => $args === []
+                ? (function_exists('is_archive') && is_archive())
+                : (function_exists('is_post_type_archive') && is_post_type_archive($args)),
+            'category' => function_exists('is_category') && ($args === [] ? is_category() : is_category($args)),
+            'tag' => function_exists('is_tag') && ($args === [] ? is_tag() : is_tag($args)),
+            default => $this->matchesTaxonomyLocation($location['taxonomy'], $args),
+        };
+    }
+
+    /**
+     * @param list<int|string> $terms
+     */
+    private function matchesTaxonomyLocation(string $taxonomy, array $terms): bool
+    {
+        if (!function_exists('is_tax')) {
+            return false;
+        }
+
+        if ($taxonomy === '') {
+            return is_tax();
+        }
+
+        if ($terms === []) {
+            return is_tax($taxonomy);
+        }
+
+        return is_tax($taxonomy, $terms);
+    }
+
+    private function readEnv(string $name): ?string
+    {
+        if ($this->envReader !== null) {
+            $value = ($this->envReader)($name);
+        } else {
+            $value = getenv($name, true);
+        }
+
+        if (!is_string($value)) {
+            return null;
+        }
+
+        $trimmed = trim($value);
+        return $trimmed !== '' ? $trimmed : null;
+    }
+
+    private function readFile(string $path): string|false
+    {
+        if ($this->fileReader !== null) {
+            return ($this->fileReader)($path);
+        }
+
+        if (
+            is_link($this->snippetsDir)
+            || is_link($path)
+            || !is_file($path)
+            || !is_readable($path)
+        ) {
+            return false;
+        }
+
+        $size = filesize($path);
+        if ($size === false || $size > self::MAX_SNIPPET_BYTES) {
+            return false;
+        }
+
+        return file_get_contents($path);
+    }
+
+    private function writeOutput(string $content): void
+    {
+        if ($this->outputWriter !== null) {
+            ($this->outputWriter)($content);
+            return;
+        }
+
+        echo $content;
+    }
+}
+
+if (defined('ABSPATH')) {
+    (new WpSnippets())->register();
+}

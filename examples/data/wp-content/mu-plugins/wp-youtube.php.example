@@ -3,7 +3,7 @@
 /**
  * Plugin Name: WP YouTube Tools
  * Description: Provides cached YouTube Data API v3 channel statistics shortcodes and oEmbed player parameter cleanup.
- * Version: 1.0.0
+ * Version: 1.1.0
  * Author: underhax
  */
 
@@ -16,6 +16,7 @@ declare(strict_types=1);
 final class WpYoutube
 {
     private const string DEFAULT_OEMBED_PARAMS = 'rel=0&playsinline=1&iv_load_policy=3';
+    private const int MIN_CACHE_TTL = 60;
     private const int VIEW_COUNT_TTL = 14400;
     private const int SUBSCRIBER_COUNT_TTL = 345600;
     private const int VIDEO_COUNT_TTL = 259200;
@@ -67,7 +68,9 @@ final class WpYoutube
             return self::DEFAULT_OEMBED_PARAMS;
         }
 
-        return ltrim(trim($raw), '?&');
+        $cleaned = (string) preg_replace('/[\s\x00-\x1F\x7F<>"\'`\\\\]/', '', ltrim(trim($raw), '?&'));
+
+        return $cleaned !== '' ? $cleaned : self::DEFAULT_OEMBED_PARAMS;
     }
 
     public function getDefaultApiKey(): string
@@ -132,9 +135,7 @@ final class WpYoutube
             }
 
             $params = $this->getOembedParams();
-            if ($params !== '') {
-                $html = str_replace('?feature=oembed', '?' . $params, $html);
-            }
+            $html = str_replace('?feature=oembed', '?' . $params, $html);
         }
 
         return $html;
@@ -175,7 +176,10 @@ final class WpYoutube
             ? $rawChannel
             : $this->getDefaultChannelId();
 
-        if ($apiKey === '' || $channel === '') {
+        if (
+            preg_match('/^[a-zA-Z0-9_-]+$/', $apiKey) !== 1
+            || preg_match('/^[a-zA-Z0-9_-]+$/', $channel) !== 1
+        ) {
             return '';
         }
 
@@ -183,8 +187,8 @@ final class WpYoutube
             || !is_scalar($attributes['n'])
             || !in_array((string) $attributes['n'], ['0', 'false', 'off', 'no'], true);
 
-        $cacheTtl = isset($attributes['cache']) && is_numeric($attributes['cache'])
-            ? max(0, (int) $attributes['cache'])
+        $cacheTtl = isset($attributes['cache']) && is_numeric($attributes['cache']) && (int) $attributes['cache'] > 0
+            ? max(self::MIN_CACHE_TTL, (int) $attributes['cache'])
             : $defaultCacheTtl;
 
         $transientKey = $transientPrefix . md5(
@@ -192,7 +196,7 @@ final class WpYoutube
         );
 
         $cachedResult = $this->getTransient($transientKey);
-        if (is_string($cachedResult) && $cachedResult !== '') {
+        if (is_string($cachedResult) && preg_match('/^[0-9]+(?:&nbsp;[0-9]{3})*$/', $cachedResult) === 1) {
             return $cachedResult;
         }
 
@@ -221,14 +225,16 @@ final class WpYoutube
             return '';
         }
 
-        $value = (string) $data['items'][0]['statistics'][$statField];
-        if ($formatNumber && is_numeric($value)) {
-            $value = str_replace(' ', '&nbsp;', number_format((float) $value, 0, ',', ' '));
+        $rawStat = trim((string) $data['items'][0]['statistics'][$statField]);
+        if (!ctype_digit($rawStat)) {
+            return '';
         }
 
-        if ($cacheTtl > 0) {
-            $this->setTransient($transientKey, $value, $cacheTtl);
-        }
+        $value = $formatNumber
+            ? str_replace(' ', '&nbsp;', number_format((float) $rawStat, 0, ',', ' '))
+            : $rawStat;
+
+        $this->setTransient($transientKey, $value, $cacheTtl);
 
         return $value;
     }
@@ -249,7 +255,7 @@ final class WpYoutube
             return ($this->envGetter)($name);
         }
 
-        return getenv($name);
+        return getenv($name, true);
     }
 
     private function getSecret(string $secretName): string

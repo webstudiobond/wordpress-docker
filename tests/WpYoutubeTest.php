@@ -217,6 +217,21 @@ final class WpYoutubeTest extends TestCase
         );
         $this->assertSame('', $invalidJsonYoutube->renderViewCountShortcode('non_array_atts'));
 
+        $nonNumericStatYoutube = new WpYoutube(
+            envGetter: static fn(): string => '',
+            secretGetter: static fn(): string => 'sec_val',
+            httpGetter: static fn(): string => (string) json_encode([
+                'items' => [
+                    [
+                        'statistics' => [
+                            'viewCount' => '<script>alert(1)</script>',
+                        ],
+                    ],
+                ],
+            ])
+        );
+        $this->assertSame('', $nonNumericStatYoutube->renderViewCountShortcode(['n' => '0']));
+
         $disabledYoutube = new WpYoutube(
             envGetter: static fn(string $name): string => match ($name) {
                 'WP_YOUTUBE_SHORTCODES' => 'false',

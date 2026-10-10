@@ -79,7 +79,8 @@ Production-ready, fully decoupled, and resource-efficient containerized WordPres
     │   │   ├── wp-core-cleanup.php
     │   │   ├── wp-transliterator.php
     │   │   ├── wp-youtube.php
-    │   │   └── wp-reading-time.php
+    │   │   ├── wp-reading-time.php
+    │   │   └── wp-snippets.php
     │   ├── uploads/                 # Uploaded media assets
     │   └── ...
     └── ...                          # WordPress core files (auto-populated by init service)
@@ -438,7 +439,7 @@ sudo -u ${SITE_USER} curl -fsSL ${REPO}/examples/data/wp-content/mu-plugins/wp-p
 ```
 
 Configuration (`wordpress.env` — works out of the box for `post` and `page` as drafts):
-* `WP_DUPLICATOR_POST_TYPES=post,page` — comma-separated list of post type and custom post type (CPT) slugs (e.g., `post,page,product,portfolio,bbb-room`), `*` for all non-system post types, or `none` to disable.
+* `WP_DUPLICATOR_POST_TYPES=post,page` — comma-separated list of post type and custom post type (CPT) slugs (e.g., `post,page,product,portfolio`), or `none` to disable.
 * `WP_DUPLICATOR_STATUS=draft` — status assigned to newly created clones (`draft`, `pending`, `private`, or `publish`).
 * `WP_DUPLICATOR_KEEP_AUTHOR=true` — set to `false` (`0`, `off`, `no`) to assign the user performing the duplication as the author instead of keeping the original author.
 * `WP_DUPLICATOR_CAPABILITY=edit_posts` — base capability required in addition to per-post `edit_post` permission (e.g., `edit_posts`, `publish_posts`, `edit_others_posts`, `edit_pages`, or `manage_options`).
@@ -543,7 +544,60 @@ Shortcode examples (requires no `wordpress.env` variables):
 
 ---
 
-### 10. UNIX Socket Mail Dispatcher (`wp-notify.php`)
+### 10. Conditional Snippets, Preloads & Asset Control (`wp-snippets.php`)
+
+Source: [`examples/data/wp-content/mu-plugins/wp-snippets.php.example`](examples/data/wp-content/mu-plugins/wp-snippets.php.example)
+
+* Provides a unified, environment-driven rule engine (`target|audience|device|location`) for Google Tag Manager injection, font/image `<link rel="preload">` tags, stylesheet/script deregistration, and static file-based `.html`/`.css`/`.js` inline snippets without database queries or `eval`/`include` execution.
+* Generates neutral HTML `id` attributes directly from sanitized filenames without `wp-` or `wordpress-` prefixes (compatible with *WP Hide*), and supports loading font preloads/stylesheets inside Elementor and Gutenberg visual editors via the `|editor` modifier.
+
+Installation:
+
+```bash
+REPO="https://raw.githubusercontent.com/webstudiobond/wordpress-docker/main"
+sudo -u ${SITE_USER} curl -fsSL ${REPO}/examples/data/wp-content/mu-plugins/wp-snippets.php.example \
+  -o /home/${SITE_USER}/data/wp-content/mu-plugins/wp-snippets.php
+```
+
+Configuration (`wordpress.env` — unconfigured variables register no hooks):
+* **Condition modifiers** (append after target with `|` in any order; separate multiple rules with `;`):
+  * **Audience:** `guest` (unauthenticated only), `auth` (logged-in only), `role:editor,author`, `all` (default for all rules except `WP_GTM_ID`, which defaults to `guest`).
+  * **Device:** `desktop` (`!wp_is_mobile()`), `mobile` (`wp_is_mobile()`).
+    > WARNING: When full-page caching (e.g., WP Rocket, FastCGI cache) is enabled, device modifiers require device-separated cache storage (such as WP Rocket's separate mobile cache files). If mobile caching is disabled or unified into a single cache bucket, the cached output generated for the first visitor (desktop or mobile) will be served to all subsequent visitors.
+  * **Location** (prefix with `!` to negate): `front`, `home`, `page`, `page:10,20,contact`, `single`, `single:42`, `singular:product,brand`, `archive`, `archive:product`, `category:1,news`, `tag:promo`, `tax:product_cat:12,shoes`.
+  * **ACF field** (prefix with `!` to negate): `acf:enable_math`, `acf:field_a,field_b` — requires the specified ACF field (`get_field()`) to evaluate as truthy (or falsy when negated).
+  * **Editor** (for fonts): `editor` — also outputs the font preload/stylesheet in `admin_head` and Elementor editor/preview hooks.
+* `WP_GTM_ID=GTM-XXXXXXX` — injects GTM preconnect + head script and body `<noscript>` iframe (defaults to `guest`).
+* `WP_FONTS_PRELOAD=/wp-content/fonts/heading-bold.woff2|editor` — outputs `<link rel="preload" as="font" ... crossorigin>`.
+* `WP_FONTS_STYLES=/wp-content/fonts/custom-fonts.css|editor` — outputs `<link rel="stylesheet" id="custom-fonts" href="..." media="all">`.
+* `WP_PRELOAD_IMAGES=/wp-content/uploads/hero-desktop.webp|front|desktop` — outputs `<link rel="preload" as="image" href="...">`.
+* `WP_DEREGISTER_STYLES=wp-block-library,global-styles|!single; plugin-modal-style|guest|front` — dequeues and deregisters style handles when conditions match.
+* `WP_DEREGISTER_SCRIPTS=comment-reply|!single` — dequeues and deregisters script handles when conditions match.
+* Snippet files are immutably read from `/etc/wordpress/snippets` (directory override via environment variables is strictly forbidden for security; files are read safely via `file_get_contents()` with strict filename regex and `basename()` validation).
+* `WP_SNIPPETS_HEAD=`, `WP_SNIPPETS_BODY=`, `WP_SNIPPETS_FOOTER=modal-critical.css|guest|front` — injects `.html` fragments as-is, wraps `.css` in `<style id="modal-critical">`, and wraps `.js` in `<script id="{filename}">`.
+
+#### File-Based Snippets Isolation (`snippets/` — Optional)
+
+When using `WP_SNIPPETS_HEAD`, `WP_SNIPPETS_BODY`, or `WP_SNIPPETS_FOOTER`, store snippet files outside the writable WordPress document root (`data/`) so they cannot be modified by a compromised plugin or requested directly over HTTP:
+
+1. Create `/home/${SITE_USER}/snippets` on the host, place your `.html`, `.css`, or `.js` snippet files inside, and enforce `root:${SITE_USER}` read-only group permissions:
+
+```bash
+sudo mkdir -p /home/${SITE_USER}/snippets
+sudo chown -R root:${SITE_USER} /home/${SITE_USER}/snippets
+sudo chmod 0750 /home/${SITE_USER}/snippets
+sudo find /home/${SITE_USER}/snippets -type f -exec chmod 0640 {} +
+```
+
+2. Uncomment the pre-configured volume mount under `volumes:` of the `wordpress` service in `/home/${SITE_USER}/docker-compose.yaml`:
+
+```yaml
+      - ./snippets:/etc/wordpress/snippets:ro,noexec,nosuid,nodev
+```
+
+---
+
+### 11. UNIX Socket Mail Dispatcher (`wp-notify.php`)
 
 Source: [`examples/data/wp-content/mu-plugins/wp-notify.php.example`](examples/data/wp-content/mu-plugins/wp-notify.php.example)
 
@@ -580,9 +634,10 @@ The stack enforces strict host-level privilege separation across three ownership
 * **`root:root` (Host-Only Manifests & Backups):**
   * `docker-compose.yaml`, `.env`, `wordpress.env`, `notifier.env` — `0600`
   * `mariadb-backup/` — `0700`
-* **`root:${SITE_USER}` (Read-Only Service Configs & Secrets):**
+* **`root:${SITE_USER}` (Read-Only Service Configs, Secrets & Snippets):**
   * `config/` — directories `0750`, files `0640` (mounted `:ro` into containers)
   * `secrets/` — directory `0750`, secret files `0440` (containers have group read-only access and cannot `chmod` or overwrite files)
+  * `snippets/` *(optional)* — directory `0750`, snippet files `0640` (mounted `:ro,noexec,nosuid,nodev` at `/etc/wordpress/snippets`)
 * **`${SITE_USER}:${SITE_USER}` (Runtime Writable Storage):**
   * `.wp-cli/`, `mariadb/`, `tmp/` — `0700`
   * `data/` — top-level directory `0700`, internal directories `0755`, internal files `0644`
@@ -601,12 +656,13 @@ sudo chmod 0600 /home/${SITE_USER}/docker-compose.yaml /home/${SITE_USER}/.env /
 sudo chown -R root:root /home/${SITE_USER}/mariadb-backup
 sudo chmod 0700 /home/${SITE_USER}/mariadb-backup
 
-# 2. Read-only service configs & secrets (root:${SITE_USER})
+# 2. Read-only service configs, secrets & optional snippets (root:${SITE_USER})
 sudo chown -R root:${SITE_USER} /home/${SITE_USER}/{config,secrets}
 sudo find /home/${SITE_USER}/config -type d -exec chmod 0750 {} +
 sudo find /home/${SITE_USER}/config -type f -exec chmod 0640 {} +
 sudo chmod 0750 /home/${SITE_USER}/secrets
 sudo chmod 0440 /home/${SITE_USER}/secrets/*.txt
+[ -d /home/${SITE_USER}/snippets ] && sudo chown -R root:${SITE_USER} /home/${SITE_USER}/snippets && sudo chmod 0750 /home/${SITE_USER}/snippets && sudo find /home/${SITE_USER}/snippets -type f -exec chmod 0640 {} +
 
 # 3. Runtime writable directories & WordPress files (${SITE_USER}:${SITE_USER})
 sudo chown -R ${SITE_USER}:${SITE_USER} /home/${SITE_USER}/{.wp-cli,data,mariadb,tmp}
@@ -626,7 +682,7 @@ sudo find /home/${SITE_USER}/data -type f -exec chmod 0644 {} +
 
 Each site stack includes an internal Angie container that handles FastCGI routing to PHP-FPM via the UNIX socket. It does **not** publish any ports on the host. An external Edge Angie instance running on the host acts as the hardened perimeter gateway: it terminates TLS, manages automated certificates, enforces perimeter security, and forwards incoming traffic to the internal site containers.
 
-The external Edge Angie operates at a dedicated static IP (`172.20.0.2`) inside the **`frontend_gateway`** network (`172.20.0.0/16`). All WordPress site stacks connect their internal Angie container (`${SITE_USER}_angie`) to this network, allowing Edge Angie to route requests directly by container name while internal Angie instances strictly verify `$realip_remote_addr` to accept `X-Forwarded-For` headers and HTTP connections exclusively from `172.20.0.2` (blocking lateral traffic from any other container in the shared subnet).
+The external Edge Angie operates at a dedicated static IP (`172.20.0.254`) inside the **`frontend_gateway`** network (`172.20.0.0/16`). All WordPress site stacks connect their internal Angie container (`${SITE_USER}_angie`) to this network, allowing Edge Angie to route requests directly by container name while internal Angie instances strictly verify `$realip_remote_addr` to accept `X-Forwarded-For` headers and HTTP connections exclusively from `172.20.0.254` (blocking lateral traffic from any other container in the shared subnet).
 
 A complete, production-hardened, and optimized Edge reverse proxy deployment with a security-by-default architecture is available in the **[angie-docker-compose](https://github.com/webstudiobond/angie-docker-compose)** repository.
 

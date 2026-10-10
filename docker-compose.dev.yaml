@@ -152,6 +152,7 @@ services:
       - ./${DATA_DIR:-data}:/var/www/html:rw
       - ./${DATA_DIR:-data}/${WP_CONTENT_DIR:-wp-content}/uploads:/var/www/html/${WP_CONTENT_DIR:-wp-content}/uploads:rw,noexec,nosuid,nodev
       - ./secrets:/etc/wordpress/secrets:ro
+      # - ./snippets:/etc/wordpress/snippets:ro,noexec,nosuid,nodev
       - ./config/php/php-fpm.conf:/etc/php/${PHP_VERSION:-8.5}/fpm/php-fpm.conf:ro
       - ./config/php/php.ini:/etc/php/${PHP_VERSION:-8.5}/fpm/conf.d/99-custom.ini:ro
       - ./config/php/opcache.ini:/etc/php/${PHP_VERSION:-8.5}/fpm/conf.d/10-opcache.ini:ro

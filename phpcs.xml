@@ -15,6 +15,7 @@
     <file>examples/data/wp-content/mu-plugins/wp-transliterator.php.example</file>
     <file>examples/data/wp-content/mu-plugins/wp-youtube.php.example</file>
     <file>examples/data/wp-content/mu-plugins/wp-reading-time.php.example</file>
+    <file>examples/data/wp-content/mu-plugins/wp-snippets.php.example</file>
 
     <arg name="colors"/>
     <arg value="sp"/>

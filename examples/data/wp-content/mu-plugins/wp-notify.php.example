@@ -3,7 +3,7 @@
 /**
  * Plugin Name: WP Notify Mailer
  * Description: Intercepts wp_mail() and dispatches payloads to go-notifier over a local UNIX socket.
- * Version: 1.0.0
+ * Version: 1.1.0
  * Author: underhax
  */
 
@@ -11,6 +11,34 @@ declare(strict_types=1);
 
 final class WpNotifyMailer
 {
+    private const array BLOCKED_ATTACHMENT_PREFIXES = [
+        '/etc/',
+        '/private/etc/',
+        '/run/',
+        '/var/run/',
+        '/private/var/run/',
+        '/proc/',
+        '/sys/',
+        '/dev/',
+        '/root/',
+    ];
+
+    private const array BLOCKED_ATTACHMENT_EXTENSIONS = [
+        'php',
+        'phtml',
+        'phar',
+        'inc',
+        'env',
+        'ini',
+        'conf',
+        'sh',
+        'key',
+        'pem',
+        'crt',
+        'sock',
+        'sql',
+    ];
+
     /**
      * @param (callable(string, string): bool)|null $transport
      * @param (callable(string): (string|false))|null $mimeDetector
@@ -49,7 +77,7 @@ final class WpNotifyMailer
         $parsedAttachments = $this->parseAttachments($attachments);
         $socket = $this->resolveSocketPath();
 
-        if ($socket === '' || !file_exists($socket)) {
+        if ($socket === '' || is_link($socket) || !file_exists($socket)) {
             error_log('wp-notify socket missing: ' . $socket);
             return false;
         }
@@ -86,7 +114,7 @@ final class WpNotifyMailer
         $recipients = [];
         $rawRecipients = is_array($to) ? $to : explode(',', $to);
         foreach ($rawRecipients as $recipient) {
-            $cleaned = trim((string) $recipient);
+            $cleaned = trim(str_replace(["\r", "\n", "\0"], '', (string) $recipient));
             if ($cleaned !== '') {
                 $recipients[] = $cleaned;
             }
@@ -106,7 +134,7 @@ final class WpNotifyMailer
         $replyTo = '';
 
         foreach ($rawHeaders as $headerLine) {
-            $line = trim((string) $headerLine);
+            $line = trim(str_replace(["\r", "\n", "\0"], '', (string) $headerLine));
             if ($line === '') {
                 continue;
             }
@@ -135,7 +163,7 @@ final class WpNotifyMailer
 
         foreach ($rawAttachments as $attPath) {
             $path = trim((string) $attPath);
-            if ($path === '' || !is_file($path) || !is_readable($path)) {
+            if (!$this->isAllowedAttachmentPath($path)) {
                 continue;
             }
 
@@ -159,6 +187,43 @@ final class WpNotifyMailer
         return $parsed;
     }
 
+    private function isAllowedAttachmentPath(string $path): bool
+    {
+        if (
+            !str_starts_with($path, '/')
+            || str_starts_with($path, '//')
+            || str_contains($path, '..')
+            || str_contains($path, "\0")
+            || is_link($path)
+        ) {
+            return false;
+        }
+
+        $realPath = realpath($path);
+        $resolved = $realPath !== false ? $realPath : $path;
+
+        foreach (self::BLOCKED_ATTACHMENT_PREFIXES as $prefix) {
+            if (str_starts_with($path, $prefix) || str_starts_with($resolved, $prefix)) {
+                return false;
+            }
+        }
+
+        $filename = basename($resolved);
+        if (
+            str_starts_with($filename, '.')
+            || stripos($filename, 'wp-config') !== false
+        ) {
+            return false;
+        }
+
+        $ext = strtolower(pathinfo($filename, PATHINFO_EXTENSION));
+        if ($ext !== '' && in_array($ext, self::BLOCKED_ATTACHMENT_EXTENSIONS, true)) {
+            return false;
+        }
+
+        return $realPath !== false && is_file($realPath) && is_readable($realPath);
+    }
+
     private function detectMimeType(string $path): string
     {
         if (is_callable($this->mimeDetector)) {
@@ -180,7 +245,7 @@ final class WpNotifyMailer
         if ($this->maxAttachmentSizeMb !== null) {
             $maxMb = $this->maxAttachmentSizeMb;
         } else {
-            $envMaxMb = getenv('NOTIFY_MAX_ATTACHMENT_SIZE_MB');
+            $envMaxMb = getenv('NOTIFY_MAX_ATTACHMENT_SIZE_MB', true);
             if ($envMaxMb !== false && is_numeric($envMaxMb)) {
                 $maxMb = (int) $envMaxMb;
             }
@@ -192,15 +257,24 @@ final class WpNotifyMailer
     private function resolveSocketPath(): string
     {
         if ($this->socketPath !== null) {
-            return trim($this->socketPath);
+            $candidate = trim($this->socketPath);
+        } else {
+            $envSocket = getenv('NOTIFY_SOCKET_PATH', true);
+            $candidate = (is_string($envSocket) && trim($envSocket) !== '')
+                ? trim($envSocket)
+                : '/var/run/sockets/notify/notify.sock';
         }
 
-        $envSocket = getenv('NOTIFY_SOCKET_PATH');
-        if (is_string($envSocket) && trim($envSocket) !== '') {
-            return trim($envSocket);
+        if (
+            !str_starts_with($candidate, '/')
+            || str_starts_with($candidate, '//')
+            || str_contains($candidate, '..')
+            || str_contains($candidate, "\0")
+        ) {
+            return '';
         }
 
-        return '/var/run/sockets/notify/notify.sock';
+        return $candidate;
     }
 
     private function executeCurl(string $socketPath, string $jsonData): bool

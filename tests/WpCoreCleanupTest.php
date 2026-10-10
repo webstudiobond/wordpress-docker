@@ -51,7 +51,6 @@ final class WpCoreCleanupTest extends TestCase
                 'feeds',
                 'oembed',
                 'dns_prefetch',
-                'profile',
             ],
             $cleanup->getHeadTags()
         );
@@ -126,6 +125,11 @@ final class WpCoreCleanupTest extends TestCase
 
         $this->assertArrayHasKey('wp_head', $GLOBALS['test_removed_actions']);
         $this->assertArrayHasKey('comment_text', $GLOBALS['test_removed_filters']);
+        $this->assertArrayHasKey('the_content_feed', $GLOBALS['test_removed_filters']);
+        $this->assertArrayHasKey('comment_text_rss', $GLOBALS['test_removed_filters']);
+        $this->assertArrayHasKey('wp_mail', $GLOBALS['test_removed_filters']);
+        $this->assertArrayHasKey('preprocess_comment', $GLOBALS['test_registered_filters']);
+        $this->assertArrayHasKey('send_headers', $GLOBALS['test_registered_actions']);
         $this->assertArrayHasKey('init', $GLOBALS['test_registered_actions']);
         $this->assertArrayHasKey('widgets_init', $GLOBALS['test_registered_actions']);
         $this->assertArrayHasKey('wp_default_scripts', $GLOBALS['test_registered_actions']);
@@ -188,7 +192,7 @@ final class WpCoreCleanupTest extends TestCase
         $wildcardHeadCleanup = new WpCoreCleanup(
             envGetter: static fn(string $name): string => $name === 'WP_CLEANUP_HEAD_TAGS' ? '*' : ''
         );
-        $this->assertCount(9, $wildcardHeadCleanup->getHeadTags());
+        $this->assertCount(8, $wildcardHeadCleanup->getHeadTags());
     }
 
     public function testHeaderPingbackAndCommentFieldCallbacks(): void
@@ -206,15 +210,56 @@ final class WpCoreCleanupTest extends TestCase
         $cleanup->removePoweredByHeader();
         $this->assertSame(['X-Powered-By'], $removedHeaders);
 
-        $headers = ['X-Pingback' => 'https://example.com/xmlrpc.php', 'Content-Type' => 'text/html'];
+        $headers = [
+            'X-Powered-By' => 'PHP/8.5.0',
+            'x-powered-by' => 'PHP/8.5.0',
+            'X-Pingback' => 'https://example.com/xmlrpc.php',
+            'Content-Type' => 'text/html',
+        ];
         $this->assertSame(['Content-Type' => 'text/html'], $cleanup->filterWpHeaders($headers));
 
         $fields = ['author' => '<input>', 'url' => '<input>', 'email' => '<input>'];
         $this->assertSame(['author' => '<input>', 'email' => '<input>'], $cleanup->filterCommentFormFields($fields));
 
-        $selfPingLinks = ['https://example.com/post-1', 'https://example.net/post-2'];
+        $comment = ['comment_author' => 'Bot', 'comment_author_url' => 'https://spam.example.com'];
+        $this->assertSame(
+            ['comment_author' => 'Bot', 'comment_author_url' => ''],
+            $cleanup->filterPreprocessComment($comment)
+        );
+
+        $selfPingLinks = [
+            'https://example.com/post-1',
+            'http://EXAMPLE.COM/post-2',
+            'https://example.com:8080/post-3',
+            'https://example.com.attacker.example.com/post-4',
+            'https://example.net/post-5',
+            123,
+            'not-a-valid-url',
+        ];
         $cleanup->disableSelfPing($selfPingLinks);
-        $this->assertSame([1 => 'https://example.net/post-2'], $selfPingLinks);
+        $this->assertSame(
+            [
+                3 => 'https://example.com.attacker.example.com/post-4',
+                4 => 'https://example.net/post-5',
+                5 => 123,
+                6 => 'not-a-valid-url',
+            ],
+            $selfPingLinks
+        );
+
+        $emptyHomeCleanup = new WpCoreCleanup(
+            homeUrlGetter: static fn(): string => '   '
+        );
+        $emptyHomeLinks = ['https://example.com/post-1'];
+        $emptyHomeCleanup->disableSelfPing($emptyHomeLinks);
+        $this->assertSame(['https://example.com/post-1'], $emptyHomeLinks);
+
+        $invalidHomeCleanup = new WpCoreCleanup(
+            homeUrlGetter: static fn(): string => '///'
+        );
+        $invalidHomeLinks = ['https://example.com/post-1'];
+        $invalidHomeCleanup->disableSelfPing($invalidHomeLinks);
+        $this->assertSame(['https://example.com/post-1'], $invalidHomeLinks);
 
         $disabledCleanup = new WpCoreCleanup(
             envGetter: static fn(): string => 'false',
@@ -225,6 +270,9 @@ final class WpCoreCleanupTest extends TestCase
 
         $disabledCleanup->removePoweredByHeader();
         $this->assertCount(1, $removedHeaders);
+
+        $this->assertSame($headers, $disabledCleanup->filterWpHeaders($headers));
+        $this->assertSame($comment, $disabledCleanup->filterPreprocessComment($comment));
 
         $links = ['https://example.com/post-1'];
         $disabledCleanup->disableSelfPing($links);
@@ -340,9 +388,81 @@ final class WpCoreCleanupTest extends TestCase
         $enabledCleanup->onWpFooter();
         $this->assertSame(['comment-reply', 'wp-embed'], $deregistered);
         $this->assertContains('init', $addedActions);
+        $this->assertContains('send_headers', $addedActions);
         $this->assertContains('wp_head', $removedActions);
         $this->assertContains('the_generator', $addedFilters);
+        $this->assertContains('wp_headers', $addedFilters);
+        $this->assertContains('preprocess_comment', $addedFilters);
         $this->assertContains('comment_text', $removedFilters);
+        $this->assertContains('the_content_feed', $removedFilters);
+        $this->assertContains('comment_text_rss', $removedFilters);
+        $this->assertContains('wp_mail', $removedFilters);
+    }
+
+    public function testHeaderFilterRegistrationConditions(): void
+    {
+        /** @var list<string> $addedActions */
+        $addedActions = [];
+        /** @var list<string> $addedFilters */
+        $addedFilters = [];
+
+        $poweredByOnlyCleanup = new WpCoreCleanup(
+            envGetter: static fn(string $name): string => match ($name) {
+                'WP_CLEANUP_HIDE_POWERED_BY' => 'true',
+                'WP_CLEANUP_DISABLE_SELF_PING' => 'false',
+                default => 'none',
+            },
+            actionAdder: static function (string $tag) use (&$addedActions): void {
+                $addedActions[] = $tag;
+            },
+            filterAdder: static function (string $tag) use (&$addedFilters): void {
+                $addedFilters[] = $tag;
+            }
+        );
+        $poweredByOnlyCleanup->registerHooks();
+        $this->assertContains('send_headers', $addedActions);
+        $this->assertNotContains('pre_ping', $addedActions);
+        $this->assertContains('wp_headers', $addedFilters);
+
+        $addedActions = [];
+        $addedFilters = [];
+        $selfPingOnlyCleanup = new WpCoreCleanup(
+            envGetter: static fn(string $name): string => match ($name) {
+                'WP_CLEANUP_HIDE_POWERED_BY' => 'false',
+                'WP_CLEANUP_DISABLE_SELF_PING' => 'true',
+                default => 'none',
+            },
+            actionAdder: static function (string $tag) use (&$addedActions): void {
+                $addedActions[] = $tag;
+            },
+            filterAdder: static function (string $tag) use (&$addedFilters): void {
+                $addedFilters[] = $tag;
+            }
+        );
+        $selfPingOnlyCleanup->registerHooks();
+        $this->assertNotContains('send_headers', $addedActions);
+        $this->assertContains('pre_ping', $addedActions);
+        $this->assertContains('wp_headers', $addedFilters);
+
+        $addedActions = [];
+        $addedFilters = [];
+        $neitherCleanup = new WpCoreCleanup(
+            envGetter: static fn(string $name): string => match ($name) {
+                'WP_CLEANUP_HIDE_POWERED_BY' => 'false',
+                'WP_CLEANUP_DISABLE_SELF_PING' => 'false',
+                default => 'none',
+            },
+            actionAdder: static function (string $tag) use (&$addedActions): void {
+                $addedActions[] = $tag;
+            },
+            filterAdder: static function (string $tag) use (&$addedFilters): void {
+                $addedFilters[] = $tag;
+            }
+        );
+        $neitherCleanup->registerHooks();
+        $this->assertNotContains('send_headers', $addedActions);
+        $this->assertNotContains('pre_ping', $addedActions);
+        $this->assertNotContains('wp_headers', $addedFilters);
     }
 
     #[RunInSeparateProcess]
@@ -360,6 +480,7 @@ final class WpCoreCleanupTest extends TestCase
 
         $this->assertArrayHasKey('wp_head', $GLOBALS['test_removed_actions']);
         $this->assertArrayHasKey('pre_ping', $GLOBALS['test_registered_actions']);
+        $this->assertArrayHasKey('send_headers', $GLOBALS['test_registered_actions']);
         $this->assertArrayHasKey('wp_headers', $GLOBALS['test_registered_filters']);
     }
 }

@@ -257,6 +257,18 @@ final class WpNotifyTest extends TestCase
         $validFile = $this->testTmpDir . '/valid.txt';
         file_put_contents($validFile, 'Small file');
 
+        $phpFile = $this->testTmpDir . '/shell.php';
+        file_put_contents($phpFile, '<?php echo 1;');
+
+        $wpConfigFile = $this->testTmpDir . '/wp-config.txt';
+        file_put_contents($wpConfigFile, 'secret');
+
+        $dotFile = $this->testTmpDir . '/.env';
+        file_put_contents($dotFile, 'SECRET=1');
+
+        $symlinkFile = $this->testTmpDir . '/symlink.txt';
+        symlink($validFile, $symlinkFile);
+
         /** @var array<string, mixed>|null $capturedPayload */
         $capturedPayload = null;
 
@@ -276,6 +288,15 @@ final class WpNotifyTest extends TestCase
         $attachments = [
             '',
             '   ',
+            'relative/file.txt',
+            '//network/share/file.txt',
+            $this->testTmpDir . '/../traversal.txt',
+            '/etc/wordpress/secrets/db_password.txt',
+            '/run/secrets/db_password',
+            $phpFile,
+            $wpConfigFile,
+            $dotFile,
+            $symlinkFile,
             $this->testTmpDir . '/non_existent_file.pdf',
             $oversizedFile,
             $validFile,
@@ -292,6 +313,12 @@ final class WpNotifyTest extends TestCase
         $this->assertIsArray($capturedPayload);
         $this->assertCount(1, $capturedPayload['attachments']);
         $this->assertSame('valid.txt', $capturedPayload['attachments'][0]['filename']);
+
+        $invalidSocketMailer = new WpNotifyMailer(
+            socketPath: '../invalid/socket.sock',
+            transport: $transport
+        );
+        $this->assertFalse($invalidSocketMailer->send('admin@example.com', 'Subject', 'Body'));
     }
 
     public function testZeroMaxAttachmentSizeDisablesLimit(): void
