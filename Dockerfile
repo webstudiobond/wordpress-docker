@@ -2,6 +2,35 @@ FROM wordpress:cli-2.12.0-php8.5@sha256:c522811ac21e737b9e986adfc068bdd085fb5b3b
 
 FROM wordpress:7.1.3-php8.5-fpm-alpine@sha256:a2f288bfcf3cd459873e55f69d2532a729354e74f550105410f401fe4b05ec9e AS wordpress-donor
 
+FROM --platform=$BUILDPLATFORM golang:1.27.2-alpine3.24@sha256:85dc1069ac644ea3c527b177303a406eb3358192816cd7f9e5848eb658851673 AS wp-guard-builder
+
+WORKDIR /src
+
+COPY go.mod ./
+RUN go mod download
+COPY cmd/ cmd/
+COPY internal/ internal/
+COPY examples/data/wp-content/mu-plugins/ /mu-plugins-src/
+COPY --from=wordpress-donor /usr/src/wordpress /usr/src/wordpress
+
+ARG TARGETOS
+ARG TARGETARCH
+
+RUN set -eux; \
+    CGO_ENABLED=0 go build -ldflags="-s -w" -trimpath -o /bin/wp-guard-host ./cmd/wp-guard; \
+    mkdir -p /mu-plugins; \
+    for f in /mu-plugins-src/wp-*.php.example; do \
+        [ -f "$f" ] || continue; \
+        base=$(basename "$f" .example); \
+        cp "$f" "/mu-plugins/$base"; \
+    done; \
+    /bin/wp-guard-host manifest generate --source /usr/src/wordpress --mu-dir /mu-plugins --output /core-manifest.json; \
+    CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} go build \
+        -ldflags="-s -w" \
+        -trimpath \
+        -o /bin/wp-guard \
+        ./cmd/wp-guard
+
 FROM debian:trixie-slim@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f AS base
 
 LABEL maintainer="underhax" \
@@ -76,6 +105,8 @@ RUN set -eux; \
         /usr/share/doc \
         /usr/share/info
 
+COPY --from=wp-guard-builder --chmod=0755 /bin/wp-guard /usr/local/bin/wp-guard
+
 WORKDIR /var/www/html
 
 FROM base AS cli
@@ -92,7 +123,8 @@ ENTRYPOINT ["wp"]
 FROM base AS fpm
 
 COPY --from=wordpress-donor /usr/src/wordpress /usr/src/wordpress
-COPY --chmod=0755 build/FilesystemInterface.php build/NativeFilesystem.php build/WordPressSync.php build/wp-sync.php /usr/local/bin/
+COPY --from=wp-guard-builder /core-manifest.json /usr/local/share/wordpress/core-manifest.json
+COPY --from=wp-guard-builder /mu-plugins /usr/local/share/wordpress/mu-plugins
 
 RUN rm -f /bin/sh /bin/dash /bin/bash /usr/bin/sh /usr/bin/dash /usr/bin/bash
 

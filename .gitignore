@@ -5,6 +5,7 @@
 
 *.md
 !README.md
+!DEVELOPMENT.md
 !.github/**/*.md
 
 secrets/
@@ -20,3 +21,19 @@ tmp/
 
 .phpunit.cache/
 vendor/
+
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+*.test
+
+*.out
+coverage.*
+*.coverprofile
+profile.cov
+
+go.work
+go.work.sum

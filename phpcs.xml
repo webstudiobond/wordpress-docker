@@ -2,7 +2,6 @@
 <ruleset name="WordPressDocker">
     <description>Coding standards for WordPress Docker infrastructure scripts</description>
 
-    <file>build</file>
     <file>tests</file>
     <file>examples/data/wp-config.php.example</file>
     <file>examples/data/wp-content/mu-plugins/wp-notify.php.example</file>
@@ -16,6 +15,7 @@
     <file>examples/data/wp-content/mu-plugins/wp-youtube.php.example</file>
     <file>examples/data/wp-content/mu-plugins/wp-reading-time.php.example</file>
     <file>examples/data/wp-content/mu-plugins/wp-snippets.php.example</file>
+    <file>examples/data/wp-content/mu-plugins/sbs-loader.php.example</file>
 
     <arg name="colors"/>
     <arg value="sp"/>

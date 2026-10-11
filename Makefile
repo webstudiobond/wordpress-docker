@@ -1,4 +1,4 @@
-.PHONY: php-lint phpcs phpcs-fix phpstan test php-verify coverage docker-lint compose-validate security-trivy secrets-scan verify clean
+.PHONY: php-lint phpcs phpcs-fix phpstan php-test php-verify php-coverage go-check go-test go-vulncheck go-verify go-coverage go-build docker-lint compose-validate security-trivy secrets-scan verify clean
 
 php-lint:
 	find . -path ./vendor -prune -o -type f \( -name "*.php" -o -name "*.php.example" \) -print0 | xargs -0 -n1 php -l
@@ -12,14 +12,33 @@ phpcs-fix:
 phpstan:
 	phpstan analyse --debug --no-progress
 
-test:
+php-test:
 	phpunit --no-coverage
-	php build/wp-sync.php
 
-php-verify: php-lint phpcs phpstan test
+php-verify: php-lint phpcs phpstan php-test
 
-coverage:
+php-coverage:
 	phpunit --coverage-text
+
+go-check:
+	@test -z "$$(gofmt -s -l .)" || (echo "Unformatted files found. Run 'gofmt -s -w .' to fix them." && false)
+	golangci-lint run ./...
+	go build ./...
+
+go-test:
+	go test -v -race ./...
+
+go-coverage:
+	go test -v -race -coverprofile=coverage.out ./...
+	go tool cover -func=coverage.out
+
+go-vulncheck:
+	govulncheck ./...
+
+go-verify: go-check go-test go-vulncheck
+
+go-build:
+	CGO_ENABLED=0 go build -ldflags="-s -w" -trimpath -o bin/wp-guard ./cmd/wp-guard
 
 docker-lint:
 	hadolint Dockerfile
@@ -43,7 +62,7 @@ security-trivy:
 secrets-scan:
 	gitleaks detect --source . --no-git --no-color -v --redact
 
-verify: docker-lint php-lint phpcs phpstan test security-trivy secrets-scan
+verify: docker-lint compose-validate php-verify go-verify security-trivy secrets-scan
 
 clean:
-	rm -rf .phpunit.cache .phpcs-cache coverage coverage.xml
+	rm -rf .phpunit.cache .phpcs-cache coverage coverage.xml *.out .gocache bin/

@@ -69,18 +69,8 @@ Production-ready, fully decoupled, and resource-efficient containerized WordPres
 └── data/                            # WordPress document root
     ├── wp-config.php                # Site configuration (from examples/data/wp-config.php.example)
     ├── wp-content/                  # User content directory
-    │   ├── mu-plugins/              # Must-use plugins directory (optional templates)
-    │   │   ├── wp-notify.php
-    │   │   ├── wp-performance.php
-    │   │   ├── wp-translation-updates-disabler.php
-    │   │   ├── wp-telemetry-blocker.php
-    │   │   ├── wp-acf-editor-control.php
-    │   │   ├── wp-post-duplicator.php
-    │   │   ├── wp-core-cleanup.php
-    │   │   ├── wp-transliterator.php
-    │   │   ├── wp-youtube.php
-    │   │   ├── wp-reading-time.php
-    │   │   └── wp-snippets.php
+    │   ├── mu-plugins/              # Must-use plugins directory
+    │   │   └── sbs-loader.php       # Platform loader (mounted :ro, root:${SITE_USER} 0640)
     │   ├── uploads/                 # Uploaded media assets
     │   └── ...
     └── ...                          # WordPress core files (auto-populated by init service)
@@ -276,13 +266,16 @@ To provide high-performance, non-blocking delivery without storing plaintext SMT
    sudo chmod 0600 /home/${SITE_USER}/notifier.env
    ```
 
-3. **Install the mu-plugin interceptor:**
+3. **Install the SBS Platform Loader:**
+   Download `sbs-loader.php`, which dynamically and securely loads platform MU-plugins (including `wp-notify.php` by default) from the immutable container layer:
    ```bash
    sudo -u ${SITE_USER} mkdir -p /home/${SITE_USER}/data/wp-content/mu-plugins
-   sudo -u ${SITE_USER} curl -fsSL ${REPO}/examples/data/wp-content/mu-plugins/wp-notify.php.example \
-     -o /home/${SITE_USER}/data/wp-content/mu-plugins/wp-notify.php
+   sudo curl -fsSL ${REPO}/examples/data/wp-content/mu-plugins/sbs-loader.php.example \
+     -o /home/${SITE_USER}/data/wp-content/mu-plugins/sbs-loader.php
+   sudo chown root:${SITE_USER} /home/${SITE_USER}/data/wp-content/mu-plugins/sbs-loader.php
+   sudo chmod 0640 /home/${SITE_USER}/data/wp-content/mu-plugins/sbs-loader.php
    ```
-   The `wp-notify.php` must-use plugin automatically intercepts all `wp_mail()` calls and dispatches the payload to `/var/run/sockets/notify/notify.sock`.
+   `sbs-loader.php` is mounted read-only into the container. It loads `wp-notify.php` from `/usr/local/share/wordpress/mu-plugins/` to intercept all `wp_mail()` calls and dispatch them to `/var/run/sockets/notify/notify.sock`.
 
 #### Option B: Disable go-notifier (Alternative)
 
@@ -293,7 +286,8 @@ If you plan to use an external WordPress plugin sending email via direct HTTP AP
    ```bash
    sudo nano /home/${SITE_USER}/docker-compose.yaml
    ```
-2. **Do not create** `data/wp-content/mu-plugins/wp-notify.php` or `notifier.env`.
+2. **Disable notify in `wordpress.env`:**
+   Set `WP_ENABLED_MU_PLUGINS=none` (or omit `notify` from your custom slug list in `WP_ENABLED_MU_PLUGINS`) and do not create `notifier.env`.
 
 ### 8. Start the Stack
 
@@ -329,35 +323,45 @@ docker compose -f /home/${SITE_USER}/docker-compose.yaml down
 
 ## Optional Must-Use (MU) Plugins
 
-WordPress automatically loads all PHP files located directly inside `data/wp-content/mu-plugins/` on every request. Must-use plugins cannot be accidentally deactivated in the web dashboard and do not store settings in the database.
+All platform MU-plugins are pre-installed directly inside the container image at `/usr/local/share/wordpress/mu-plugins/` (immutable read-only system layer). They cannot be modified or tampered with by web processes or compromised plugins.
 
-This repository provides optional, zero-dependency MU-plugin templates in [`examples/data/wp-content/mu-plugins/`](examples/data/wp-content/mu-plugins/) configured via `/home/${SITE_USER}/wordpress.env`.
-
-Ensure the target directory exists before installing any MU-plugin:
+To activate them, you only install a single lightweight loader — **`sbs-loader.php`** — into `data/wp-content/mu-plugins/`:
 
 ```bash
 SITE_USER=mysite
+REPO="https://raw.githubusercontent.com/webstudiobond/wordpress-docker/main"
+
 sudo -u ${SITE_USER} mkdir -p /home/${SITE_USER}/data/wp-content/mu-plugins
+sudo curl -fsSL ${REPO}/examples/data/wp-content/mu-plugins/sbs-loader.php.example \
+  -o /home/${SITE_USER}/data/wp-content/mu-plugins/sbs-loader.php
+sudo chown root:${SITE_USER} /home/${SITE_USER}/data/wp-content/mu-plugins/sbs-loader.php
+sudo chmod 0640 /home/${SITE_USER}/data/wp-content/mu-plugins/sbs-loader.php
 ```
+
+`sbs-loader.php` is mounted into the container as **read-only** (`:ro`), and its SHA-256 integrity is strictly verified by `wp-guard` during container startup.
+
+### Enabling Platform Plugins via Environment
+
+Control which platform MU-plugins are loaded using `WP_ENABLED_MU_PLUGINS` in `/home/${SITE_USER}/wordpress.env`:
+
+* **Default (unset or empty):** loads `notify` (`wp-notify.php`).
+* **Specific plugins:** comma-separated slugs, e.g. `WP_ENABLED_MU_PLUGINS=notify,performance,reading-time`.
+* **Disable all:** `WP_ENABLED_MU_PLUGINS=none`.
+
+Available platform slugs:
+`acf-editor-control`, `core-cleanup`, `notify`, `performance`, `post-duplicator`, `reading-time`, `snippets`, `telemetry-blocker`, `translation-updates-disabler`, `transliterator`, `youtube`.
 
 ---
 
 ### 1. WordPress Update & Network Optimization (`wp-performance.php`)
 
-Source: [`examples/data/wp-content/mu-plugins/wp-performance.php.example`](examples/data/wp-content/mu-plugins/wp-performance.php.example)
+* **Slug:** `performance`
+* Source: [`examples/data/wp-content/mu-plugins/wp-performance.php.example`](examples/data/wp-content/mu-plugins/wp-performance.php.example)
 
 * Releases the browser tab immediately once a core, plugin, theme, or translation update finishes in the WordPress dashboard, allowing remaining post-update routines to complete asynchronously in the background without making the user wait.
 * Enforces IPv4 for outbound WordPress HTTP requests so external API calls (`api.wordpress.org`, plugin servers, webhooks) do not hang waiting for unreachable IPv6 timeouts in an IPv4-only Docker network.
 
-Installation:
-
-```bash
-REPO="https://raw.githubusercontent.com/webstudiobond/wordpress-docker/main"
-sudo -u ${SITE_USER} curl -fsSL ${REPO}/examples/data/wp-content/mu-plugins/wp-performance.php.example \
-  -o /home/${SITE_USER}/data/wp-content/mu-plugins/wp-performance.php
-```
-
-Configuration (`wordpress.env` — both enabled by default when installed):
+Configuration (`wordpress.env` — both enabled by default when active):
 * `WP_PERF_FASTCGI_FINISH=true` — set to `false`, `0`, or `off` to disable early response flushing.
 * `WP_PERF_FORCE_IPV4=true` — set to `false`, `0`, or `off` if your host and Docker network have native IPv6 connectivity.
 
@@ -365,18 +369,11 @@ Configuration (`wordpress.env` — both enabled by default when installed):
 
 ### 2. Translation Update Control (`wp-translation-updates-disabler.php`)
 
-Source: [`examples/data/wp-content/mu-plugins/wp-translation-updates-disabler.php.example`](examples/data/wp-content/mu-plugins/wp-translation-updates-disabler.php.example)
+* **Slug:** `translation-updates-disabler`
+* Source: [`examples/data/wp-content/mu-plugins/wp-translation-updates-disabler.php.example`](examples/data/wp-content/mu-plugins/wp-translation-updates-disabler.php.example)
 
 * Prevents WordPress from silently overwriting custom or corrected localization files (`.po`, `.mo`, `.l10n.php`) in `wp-content/languages/` during background cron runs and plugin updates.
 * Allows disabling automatic background translation updates globally (while keeping manual updates and core security updates intact) or blocking translation updates entirely for specific plugins and themes.
-
-Installation:
-
-```bash
-REPO="https://raw.githubusercontent.com/webstudiobond/wordpress-docker/main"
-sudo -u ${SITE_USER} curl -fsSL ${REPO}/examples/data/wp-content/mu-plugins/wp-translation-updates-disabler.php.example \
-  -o /home/${SITE_USER}/data/wp-content/mu-plugins/wp-translation-updates-disabler.php
-```
 
 Configuration (`wordpress.env`):
 * `WP_TRANSLATION_DISABLE_AUTO_UPDATES=false` — set to `true` (`1`, `on`, `yes`) to block automatic background translation updates while still allowing manual updates.
@@ -386,18 +383,11 @@ Configuration (`wordpress.env`):
 
 ### 3. Client-Side Telemetry & Tracker Blocker (`wp-telemetry-blocker.php`)
 
-Source: [`examples/data/wp-content/mu-plugins/wp-telemetry-blocker.php.example`](examples/data/wp-content/mu-plugins/wp-telemetry-blocker.php.example)
+* **Slug:** `telemetry-blocker`
+* Source: [`examples/data/wp-content/mu-plugins/wp-telemetry-blocker.php.example`](examples/data/wp-content/mu-plugins/wp-telemetry-blocker.php.example)
 
 * Selectively blocks outbound browser requests from plugins, themes, and scripts only for the external domains or URL substrings you explicitly define in `WP_TELEMETRY_BLOCKED_URLS` (nothing is blocked by default, so required analytics and integrations remain untouched).
 * Unlike ad blockers, DNS sinkholes, or strict `Content-Security-Policy` rules that abort connections and can cause unhandled JavaScript errors or broken UI components, this plugin intercepts matching URLs in the browser and returns a synthetic `200 OK` response so scripts continue working normally without transmitting data externally.
-
-Installation:
-
-```bash
-REPO="https://raw.githubusercontent.com/webstudiobond/wordpress-docker/main"
-sudo -u ${SITE_USER} curl -fsSL ${REPO}/examples/data/wp-content/mu-plugins/wp-telemetry-blocker.php.example \
-  -o /home/${SITE_USER}/data/wp-content/mu-plugins/wp-telemetry-blocker.php
-```
 
 Configuration (`wordpress.env`):
 * `WP_TELEMETRY_BLOCKED_URLS=` — comma-separated list of domains or URL substrings to intercept (e.g., `telemetry.example.com,analytics.example.net/collect`). When empty, the plugin remains inactive.
@@ -406,18 +396,11 @@ Configuration (`wordpress.env`):
 
 ### 4. ACF & Gutenberg Visibility Sync (`wp-acf-editor-control.php`)
 
-Source: [`examples/data/wp-content/mu-plugins/wp-acf-editor-control.php.example`](examples/data/wp-content/mu-plugins/wp-acf-editor-control.php.example)
+* **Slug:** `acf-editor-control`
+* Source: [`examples/data/wp-content/mu-plugins/wp-acf-editor-control.php.example`](examples/data/wp-content/mu-plugins/wp-acf-editor-control.php.example)
 
 * In Advanced Custom Fields (ACF), enabling *Hide on screen → Content Editor* hides the Classic Editor, but does not disable the WordPress Block Editor (Gutenberg).
 * Automatically disables Gutenberg on post types and pages (including Polylang translations) where active ACF field groups hide the content editor, caching the rules in `wp_options` when field groups are saved to avoid extra database queries on page load.
-
-Installation:
-
-```bash
-REPO="https://raw.githubusercontent.com/webstudiobond/wordpress-docker/main"
-sudo -u ${SITE_USER} curl -fsSL ${REPO}/examples/data/wp-content/mu-plugins/wp-acf-editor-control.php.example \
-  -o /home/${SITE_USER}/data/wp-content/mu-plugins/wp-acf-editor-control.php
-```
 
 *(Requires no `wordpress.env` variables; works automatically based on ACF field group settings).*
 
@@ -425,18 +408,11 @@ sudo -u ${SITE_USER} curl -fsSL ${REPO}/examples/data/wp-content/mu-plugins/wp-a
 
 ### 5. Post & Page Duplicator (`wp-post-duplicator.php`)
 
-Source: [`examples/data/wp-content/mu-plugins/wp-post-duplicator.php.example`](examples/data/wp-content/mu-plugins/wp-post-duplicator.php.example)
+* **Slug:** `post-duplicator`
+* Source: [`examples/data/wp-content/mu-plugins/wp-post-duplicator.php.example`](examples/data/wp-content/mu-plugins/wp-post-duplicator.php.example)
 
 * Adds a one-click *Duplicate* action to posts, pages, and configured custom post types in the WordPress dashboard, cloning content, taxonomy terms, and custom fields (including serialized ACF and page-builder metadata) without installing third-party duplicator plugins.
 * Preserves Polylang language assignments while excluding internal translation group bindings and edit locks so duplicated drafts never overwrite existing multilingual links or old slug redirects.
-
-Installation:
-
-```bash
-REPO="https://raw.githubusercontent.com/webstudiobond/wordpress-docker/main"
-sudo -u ${SITE_USER} curl -fsSL ${REPO}/examples/data/wp-content/mu-plugins/wp-post-duplicator.php.example \
-  -o /home/${SITE_USER}/data/wp-content/mu-plugins/wp-post-duplicator.php
-```
 
 Configuration (`wordpress.env` — works out of the box for `post` and `page` as drafts):
 * `WP_DUPLICATOR_POST_TYPES=post,page` — comma-separated list of post type and custom post type (CPT) slugs (e.g., `post,page,product,portfolio`), or `none` to disable.
@@ -448,18 +424,11 @@ Configuration (`wordpress.env` — works out of the box for `post` and `page` as
 
 ### 6. Core Head, Header & Comment Cleanup (`wp-core-cleanup.php`)
 
-Source: [`examples/data/wp-content/mu-plugins/wp-core-cleanup.php.example`](examples/data/wp-content/mu-plugins/wp-core-cleanup.php.example)
+* **Slug:** `core-cleanup`
+* Source: [`examples/data/wp-content/mu-plugins/wp-core-cleanup.php.example`](examples/data/wp-content/mu-plugins/wp-core-cleanup.php.example)
 
 * Removes redundant WordPress `<head>` metadata (`wp_generator`, `wlwmanifest`, `rsd`, `shortlink`, REST API discovery links, feed links, oEmbed links, DNS prefetch hints, profile link), strips the `X-Powered-By` and `X-Pingback` HTTP headers, disables internal self-pingbacks, and removes core Emoji scripts/styles out of the box.
 * Hardens comment forms against link spam by removing the website (`url`) field, disabling automatic link conversion (`make_clickable`), and deregistering `comment-reply.js`, with optional flags to disable Gutenberg global styles, `jquery-migrate`, and Speculative Loading.
-
-Installation:
-
-```bash
-REPO="https://raw.githubusercontent.com/webstudiobond/wordpress-docker/main"
-sudo -u ${SITE_USER} curl -fsSL ${REPO}/examples/data/wp-content/mu-plugins/wp-core-cleanup.php.example \
-  -o /home/${SITE_USER}/data/wp-content/mu-plugins/wp-core-cleanup.php
-```
 
 Configuration (`wordpress.env` — baseline head, header, emoji, self-ping, and comment cleanups are enabled by default):
 * `WP_CLEANUP_HEAD_TAGS=generator,wlwmanifest,rsd,shortlink,rest_links,feeds,oembed,dns_prefetch,profile` — comma-separated list of `<head>` items to remove, `*` for all, or `none` to keep all default tags.
@@ -475,18 +444,11 @@ Configuration (`wordpress.env` — baseline head, header, emoji, self-ping, and 
 
 ### 7. Slug & Filename Transliterator (`wp-transliterator.php`)
 
-Source: [`examples/data/wp-content/mu-plugins/wp-transliterator.php.example`](examples/data/wp-content/mu-plugins/wp-transliterator.php.example)
+* **Slug:** `transliterator`
+* Source: [`examples/data/wp-content/mu-plugins/wp-transliterator.php.example`](examples/data/wp-content/mu-plugins/wp-transliterator.php.example)
 
 * Automatically transliterates non-Latin slugs of newly saved posts, pages, and taxonomy terms (`sanitize_title` in `'save'` context without breaking existing frontend URLs) and newly uploaded media filenames (`sanitize_file_name`), including macOS NFD decomposed character normalization and European diacritics removal via WordPress `remove_accents()`.
 * Operates entirely in memory using OPcache-backed constant conversion tables (`ISO9`, `universal` combined multilingual table, `uk`, `bel`, `bg_BG`, `mk_MK`, `sr_RS`, `kk`, `el`, `hy`, `ka_GE`, `he_IL`) with zero database queries.
-
-Installation:
-
-```bash
-REPO="https://raw.githubusercontent.com/webstudiobond/wordpress-docker/main"
-sudo -u ${SITE_USER} curl -fsSL ${REPO}/examples/data/wp-content/mu-plugins/wp-transliterator.php.example \
-  -o /home/${SITE_USER}/data/wp-content/mu-plugins/wp-transliterator.php
-```
 
 Configuration (`wordpress.env` — defaults to `universal` with both slug and filename transliteration enabled):
 * `WP_TRANSLIT_TABLE=universal` — conversion table to use (`universal` / `multi` / `all` combined multilingual table by default, `auto` to resolve from WordPress `get_locale()`, `uk`, `ISO9`, `bel`, `bg_BG`, `mk_MK`, `sr_RS`, `kk`, `el`, `hy`, `ka_GE`, or `he_IL`).
@@ -498,18 +460,11 @@ Configuration (`wordpress.env` — defaults to `universal` with both slug and fi
 
 ### 8. YouTube Channel Statistics & oEmbed Tools (`wp-youtube.php`)
 
-Source: [`examples/data/wp-content/mu-plugins/wp-youtube.php.example`](examples/data/wp-content/mu-plugins/wp-youtube.php.example)
+* **Slug:** `youtube`
+* Source: [`examples/data/wp-content/mu-plugins/wp-youtube.php.example`](examples/data/wp-content/mu-plugins/wp-youtube.php.example)
 
 * Automatically rewrites YouTube oEmbed iframes to privacy-enhanced `youtube-nocookie.com/embed/` and replaces `?feature=oembed` with clean, non-deprecated player parameters (`rel=0&playsinline=1&iv_load_policy=3`).
 * Optionally provides cached YouTube Data API v3 shortcodes (`[ytv]` for total channel views, `[yts]` for subscriber count, `[ytc]` for video count) backed by WordPress transients and `wp_remote_get()`, reading default credentials from Docker Secrets (`wp_youtube_api_key`, `wp_youtube_channel_id`) or `wordpress.env`.
-
-Installation:
-
-```bash
-REPO="https://raw.githubusercontent.com/webstudiobond/wordpress-docker/main"
-sudo -u ${SITE_USER} curl -fsSL ${REPO}/examples/data/wp-content/mu-plugins/wp-youtube.php.example \
-  -o /home/${SITE_USER}/data/wp-content/mu-plugins/wp-youtube.php
-```
 
 Configuration (`wordpress.env` — oEmbed parameter cleanup and `youtube-nocookie.com` are enabled by default; channel statistics shortcodes are opt-in):
 * `WP_YOUTUBE_OEMBED_CLEANUP=true` — customize YouTube oEmbed iframe parameters (`false` to disable).
@@ -523,18 +478,11 @@ Configuration (`wordpress.env` — oEmbed parameter cleanup and `youtube-nocooki
 
 ### 9. Article Reading Time Shortcode (`wp-reading-time.php`)
 
-Source: [`examples/data/wp-content/mu-plugins/wp-reading-time.php.example`](examples/data/wp-content/mu-plugins/wp-reading-time.php.example)
+* **Slug:** `reading-time`
+* Source: [`examples/data/wp-content/mu-plugins/wp-reading-time.php.example`](examples/data/wp-content/mu-plugins/wp-reading-time.php.example)
 
 * Provides a zero-configuration `[reading_time]` shortcode for single post templates (e.g., Elementor Single Post layouts) that reads raw `post_content` directly without triggering recursive `the_content` filters, strips `<script>`/`<style>` blocks and shortcodes, preserves word boundaries between adjacent HTML tags, and counts words across any alphabet using Unicode character properties (`\p{L}`, `\p{N}`).
 * Defaults to `200` words per minute (rounded up to whole minutes, minimum `1`) and `~ 3 min` output (`approx="true"`, `label="min"`), with full shortcode attribute overrides for speed, prefix, invariant label, 2-form (`minute|minutes`), or 3-form (`form1|form2|form5` or `min1`/`min2`/`min3`) pluralization, plus optional `<span class="reading-time">` BEM wrappers (`__prefix`, `__value`), an inline `1em` SVG timer icon (`icon="true"`), and a deduplicated zero-specificity `:where(...)` `<style>` block for baseline flex alignment.
-
-Installation:
-
-```bash
-REPO="https://raw.githubusercontent.com/webstudiobond/wordpress-docker/main"
-sudo -u ${SITE_USER} curl -fsSL ${REPO}/examples/data/wp-content/mu-plugins/wp-reading-time.php.example \
-  -o /home/${SITE_USER}/data/wp-content/mu-plugins/wp-reading-time.php
-```
 
 Shortcode examples (requires no `wordpress.env` variables):
 * `[reading_time]` — outputs plain text `~ 3 min` (default `wpm="200"`, `approx="true"`, `label="min"`).
@@ -546,18 +494,11 @@ Shortcode examples (requires no `wordpress.env` variables):
 
 ### 10. Conditional Snippets, Preloads & Asset Control (`wp-snippets.php`)
 
-Source: [`examples/data/wp-content/mu-plugins/wp-snippets.php.example`](examples/data/wp-content/mu-plugins/wp-snippets.php.example)
+* **Slug:** `snippets`
+* Source: [`examples/data/wp-content/mu-plugins/wp-snippets.php.example`](examples/data/wp-content/mu-plugins/wp-snippets.php.example)
 
 * Provides a unified, environment-driven rule engine (`target|audience|device|location`) for Google Tag Manager injection, font/image `<link rel="preload">` tags, stylesheet/script deregistration, and static file-based `.html`/`.css`/`.js` inline snippets without database queries or `eval`/`include` execution.
 * Generates neutral HTML `id` attributes directly from sanitized filenames without `wp-` or `wordpress-` prefixes (compatible with *WP Hide*), and supports loading font preloads/stylesheets inside Elementor and Gutenberg visual editors via the `|editor` modifier.
-
-Installation:
-
-```bash
-REPO="https://raw.githubusercontent.com/webstudiobond/wordpress-docker/main"
-sudo -u ${SITE_USER} curl -fsSL ${REPO}/examples/data/wp-content/mu-plugins/wp-snippets.php.example \
-  -o /home/${SITE_USER}/data/wp-content/mu-plugins/wp-snippets.php
-```
 
 Configuration (`wordpress.env` — unconfigured variables register no hooks):
 * **Condition modifiers** (append after target with `|` in any order; separate multiple rules with `;`):
@@ -599,7 +540,8 @@ sudo find /home/${SITE_USER}/snippets -type f -exec chmod 0640 {} +
 
 ### 11. UNIX Socket Mail Dispatcher (`wp-notify.php`)
 
-Source: [`examples/data/wp-content/mu-plugins/wp-notify.php.example`](examples/data/wp-content/mu-plugins/wp-notify.php.example)
+* **Slug:** `notify` *(enabled by default)*
+* Source: [`examples/data/wp-content/mu-plugins/wp-notify.php.example`](examples/data/wp-content/mu-plugins/wp-notify.php.example)
 
 * Routes all `wp_mail()` calls over an isolated UNIX socket to [`go-notifier`](https://github.com/webstudiobond/go-notifier) because the hardened PHP-FPM container has no shell or local mail binary (`sendmail`/`postfix`), eliminating the need for third-party SMTP plugins and keeping mail credentials out of the WordPress database.
 
@@ -634,13 +576,14 @@ The stack enforces strict host-level privilege separation across three ownership
 * **`root:root` (Host-Only Manifests & Backups):**
   * `docker-compose.yaml`, `.env`, `wordpress.env`, `notifier.env` — `0600`
   * `mariadb-backup/` — `0700`
-* **`root:${SITE_USER}` (Read-Only Service Configs, Secrets & Snippets):**
+* **`root:${SITE_USER}` (Read-Only Service Configs, Secrets, Platform Loader & Snippets):**
   * `config/` — directories `0750`, files `0640` (mounted `:ro` into containers)
   * `secrets/` — directory `0750`, secret files `0440` (containers have group read-only access and cannot `chmod` or overwrite files)
   * `snippets/` *(optional)* — directory `0750`, snippet files `0640` (mounted `:ro,noexec,nosuid,nodev` at `/etc/wordpress/snippets`)
+  * `data/wp-content/mu-plugins/sbs-loader.php` — `0640` (mounted `:ro` into containers)
 * **`${SITE_USER}:${SITE_USER}` (Runtime Writable Storage):**
   * `.wp-cli/`, `mariadb/`, `tmp/` — `0700`
-  * `data/` — top-level directory `0700`, internal directories `0755`, internal files `0644`
+  * `data/` — top-level directory `0700`, internal directories `0750`, internal files `0640`
 
 ### One-Shot Permission Reset (Running Stack)
 
@@ -667,8 +610,11 @@ sudo chmod 0440 /home/${SITE_USER}/secrets/*.txt
 # 3. Runtime writable directories & WordPress files (${SITE_USER}:${SITE_USER})
 sudo chown -R ${SITE_USER}:${SITE_USER} /home/${SITE_USER}/{.wp-cli,data,mariadb,tmp}
 sudo chmod 0700 /home/${SITE_USER}/{.wp-cli,data,mariadb,tmp}
-sudo find /home/${SITE_USER}/data -mindepth 1 -type d -exec chmod 0755 {} +
-sudo find /home/${SITE_USER}/data -type f -exec chmod 0644 {} +
+sudo find /home/${SITE_USER}/data -mindepth 1 -type d -exec chmod 0750 {} +
+sudo find /home/${SITE_USER}/data -type f -exec chmod 0640 {} +
+
+# 4. Read-only platform loader (root:${SITE_USER} 0640)
+[ -f /home/${SITE_USER}/data/wp-content/mu-plugins/sbs-loader.php ] && sudo chown root:${SITE_USER} /home/${SITE_USER}/data/wp-content/mu-plugins/sbs-loader.php && sudo chmod 0640 /home/${SITE_USER}/data/wp-content/mu-plugins/sbs-loader.php
 ```
 
 </details>
@@ -1086,10 +1032,10 @@ sudo curl -fsSL ${REPO}/examples/notifier.env.example -o /home/${SITE_USER}/noti
 sudo chmod 0600 /home/${SITE_USER}/{docker-compose.yaml,.env,wordpress.env,notifier.env}
 
 sudo -u ${SITE_USER} curl -fsSL ${REPO}/examples/data/wp-config.php.example -o /home/${SITE_USER}/data/wp-config.php
-sudo -u ${SITE_USER} curl -fsSL ${REPO}/examples/data/wp-content/mu-plugins/wp-notify.php.example \
-  -o /home/${SITE_USER}/data/wp-content/mu-plugins/wp-notify.php
-sudo -u ${SITE_USER} curl -fsSL ${REPO}/examples/data/wp-content/mu-plugins/wp-performance.php.example \
-  -o /home/${SITE_USER}/data/wp-content/mu-plugins/wp-performance.php
+sudo curl -fsSL ${REPO}/examples/data/wp-content/mu-plugins/sbs-loader.php.example \
+  -o /home/${SITE_USER}/data/wp-content/mu-plugins/sbs-loader.php
+sudo chown root:${SITE_USER} /home/${SITE_USER}/data/wp-content/mu-plugins/sbs-loader.php
+sudo chmod 0640 /home/${SITE_USER}/data/wp-content/mu-plugins/sbs-loader.php
 ```
 
 Configure `.env` (set `SITE_USER`, `APP_UID`, `APP_GID` from `id ${SITE_USER}`), `wordpress.env`, `notifier.env`, and transfer any custom plugin/theme constants from your old `wp-config.php` into `/home/${SITE_USER}/data/wp-config.php`:
@@ -1111,8 +1057,9 @@ sudo -u ${SITE_USER} tar -xzf /home/${SITE_USER}/wordpress-files.tar.gz \
   --exclude=wp-config.php
 sudo chown -R ${SITE_USER}:${SITE_USER} /home/${SITE_USER}/data
 sudo chmod 0700 /home/${SITE_USER}/data
-sudo find /home/${SITE_USER}/data -mindepth 1 -type d -exec chmod 0755 {} +
-sudo find /home/${SITE_USER}/data -type f -exec chmod 0644 {} +
+sudo find /home/${SITE_USER}/data -mindepth 1 -type d -exec chmod 0750 {} +
+sudo find /home/${SITE_USER}/data -type f -exec chmod 0640 {} +
+[ -f /home/${SITE_USER}/data/wp-content/mu-plugins/sbs-loader.php ] && sudo chown root:${SITE_USER} /home/${SITE_USER}/data/wp-content/mu-plugins/sbs-loader.php && sudo chmod 0640 /home/${SITE_USER}/data/wp-content/mu-plugins/sbs-loader.php
 ```
 
 ### 5. Replace old filesystem paths in files
@@ -1244,44 +1191,9 @@ Check the homepage, media assets, and the admin dashboard in your browser. Old `
 <details>
 <summary><strong>Development</strong></summary>
 
-## Local Development & Image Building
+## Development & Contributing
 
-Clone the repository:
-
-```bash
-git clone git@github.com:webstudiobond/wordpress-docker.git
-cd wordpress-docker
-```
-
-Build the FPM image:
-
-```bash
-docker compose -f docker-compose.dev.yaml build
-```
-
-Build the CLI image (it is under the `tools` profile):
-
-```bash
-docker compose -f docker-compose.dev.yaml --profile tools build wp-cli
-```
-
-> NOTE: In `docker-compose.dev.yaml`, the `notifier` service, its `sockets_notify` volume, and its SMTP secrets are commented out by default so that local development environments can run without configuring mail credentials. If you wish to test notifications locally (e.g. using Mailpit or an external SMTP relay), uncomment the `notifier` service, `sockets_notify` volume mounts/definition, and `smtp_*` secrets in `docker-compose.dev.yaml` and provide the corresponding secret files.
-
-### Code Quality Checks
-
-Ensure PHP 8.5, PHPStan, and PHP_CodeSniffer are installed, then run:
-
-```bash
-find . -type f \( -name "*.php" -o -name "*.php.example" \) -print0 | xargs -0 -n1 php -l
-phpstan analyse --debug --no-progress
-phpcs
-```
-
-All checks must pass with zero errors:
-- **PHPStan** runs at **Level 9** (strictest) — see [phpstan.neon](phpstan.neon)
-- **PHP_CodeSniffer** enforces **strict PSR-12** with zero rule exclusions — see [phpcs.xml](phpcs.xml)
-
-For pull requests, CI additionally runs **Hadolint** (Dockerfile linting), **Docker Compose** config validation, and **Trivy** filesystem vulnerability scanning — see [ci.yml](.github/workflows/ci.yml).
+Guidelines for local environment setup, container image builds, code quality gates (Go & PHP), testing workflows, and Makefile targets are documented in the [Development Guide](DEVELOPMENT.md).
 
 </details>
 

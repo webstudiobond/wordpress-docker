@@ -15,7 +15,6 @@
     </testsuites>
     <source>
         <include>
-            <directory>build</directory>
             <file>examples/data/wp-content/mu-plugins/wp-notify.php.example</file>
             <file>examples/data/wp-content/mu-plugins/wp-performance.php.example</file>
             <file>examples/data/wp-content/mu-plugins/wp-translation-updates-disabler.php.example</file>
@@ -27,10 +26,8 @@
             <file>examples/data/wp-content/mu-plugins/wp-youtube.php.example</file>
             <file>examples/data/wp-content/mu-plugins/wp-reading-time.php.example</file>
             <file>examples/data/wp-content/mu-plugins/wp-snippets.php.example</file>
+            <file>examples/data/wp-content/mu-plugins/sbs-loader.php.example</file>
         </include>
-        <exclude>
-            <file>build/wp-sync.php</file>
-        </exclude>
     </source>
 </phpunit>
 

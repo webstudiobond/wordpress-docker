@@ -104,8 +104,8 @@ if (defined('WP_CLI') && WP_CLI && !isset($_SERVER['HTTP_HOST'])) {
 }
 
 define('FS_METHOD', 'direct');
-define('FS_CHMOD_DIR', octdec(getenv_docker('WORDPRESS_FS_CHMOD_DIR', '0755')));
-define('FS_CHMOD_FILE', octdec(getenv_docker('WORDPRESS_FS_CHMOD_FILE', '0644')));
+define('FS_CHMOD_DIR', octdec(getenv_docker('WORDPRESS_FS_CHMOD_DIR', '0750')));
+define('FS_CHMOD_FILE', octdec(getenv_docker('WORDPRESS_FS_CHMOD_FILE', '0640')));
 
 $content_dir = getenv_docker('WORDPRESS_CONTENT_DIR', 'wp-content');
 if ($content_dir !== 'wp-content') {
