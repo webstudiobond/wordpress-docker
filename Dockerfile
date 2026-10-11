@@ -24,7 +24,10 @@ RUN set -eux; \
         base=$(basename "$f" .example); \
         cp "$f" "/mu-plugins/$base"; \
     done; \
+    chmod 0755 /mu-plugins; \
+    chmod 0644 /mu-plugins/*.php; \
     /bin/wp-guard-host manifest generate --source /usr/src/wordpress --mu-dir /mu-plugins --output /core-manifest.json; \
+    chmod 0644 /core-manifest.json; \
     CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} go build \
         -ldflags="-s -w" \
         -trimpath \
@@ -123,10 +126,12 @@ ENTRYPOINT ["wp"]
 FROM base AS fpm
 
 COPY --from=wordpress-donor /usr/src/wordpress /usr/src/wordpress
-COPY --from=wp-guard-builder /core-manifest.json /usr/local/share/wordpress/core-manifest.json
+COPY --from=wp-guard-builder --chmod=0644 /core-manifest.json /usr/local/share/wordpress/core-manifest.json
 COPY --from=wp-guard-builder /mu-plugins /usr/local/share/wordpress/mu-plugins
 
-RUN rm -f /bin/sh /bin/dash /bin/bash /usr/bin/sh /usr/bin/dash /usr/bin/bash
+RUN chmod 0755 /usr/local/share/wordpress /usr/local/share/wordpress/mu-plugins && \
+    chmod 0644 /usr/local/share/wordpress/core-manifest.json /usr/local/share/wordpress/mu-plugins/*.php && \
+    rm -f /bin/sh /bin/dash /bin/bash /usr/bin/sh /usr/bin/dash /usr/bin/bash
 
 STOPSIGNAL SIGQUIT
 
