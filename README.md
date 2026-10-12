@@ -568,12 +568,12 @@ To provision or rotate super administrator identities without leaking credential
 
 ```bash
 # Provision or overwrite secret with the initial super administrator:
-docker compose -f /home/${SITE_USER}/docker-compose.yaml run --rm --no-deps init \
-  wp-guard superadmin hash | sudo tee /home/${SITE_USER}/secrets/wp_super_admins.txt > /dev/null
+docker compose -f /home/${SITE_USER}/docker-compose.yaml exec wordpress \
+  wp-guard superadmin | sudo tee /home/${SITE_USER}/secrets/wp_super_admins.txt > /dev/null
 
 # Append an additional super administrator (each hash is stored on a separate line):
-docker compose -f /home/${SITE_USER}/docker-compose.yaml run --rm --no-deps init \
-  wp-guard superadmin hash | sudo tee -a /home/${SITE_USER}/secrets/wp_super_admins.txt > /dev/null
+docker compose -f /home/${SITE_USER}/docker-compose.yaml exec wordpress \
+  wp-guard superadmin | sudo tee -a /home/${SITE_USER}/secrets/wp_super_admins.txt > /dev/null
 
 sudo chown root:${SITE_USER} /home/${SITE_USER}/secrets/wp_super_admins.txt
 sudo chmod 0440 /home/${SITE_USER}/secrets/wp_super_admins.txt
