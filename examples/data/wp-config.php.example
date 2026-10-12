@@ -97,9 +97,14 @@ if (isset($_SERVER['HTTP_X_FORWARDED_PROTO']) && is_string($_SERVER['HTTP_X_FORW
 if (isset($_SERVER['HTTP_X_FORWARDED_HOST'])) {
     $_SERVER['HTTP_HOST'] = $_SERVER['HTTP_X_FORWARDED_HOST'];
 }
-if (defined('WP_CLI') && WP_CLI && !isset($_SERVER['HTTP_HOST'])) {
+if (defined('WP_CLI') && WP_CLI) {
     if ($cliHost = getenv_docker('WORDPRESS_CLI_HOST')) {
-        $_SERVER['HTTP_HOST'] = $cliHost;
+        if (!isset($_SERVER['HTTP_HOST'])) {
+            $_SERVER['HTTP_HOST'] = $cliHost;
+        }
+        if (!isset($_SERVER['SERVER_NAME'])) {
+            $_SERVER['SERVER_NAME'] = $cliHost;
+        }
     }
 }
 

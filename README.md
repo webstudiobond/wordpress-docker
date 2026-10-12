@@ -46,6 +46,7 @@ Production-ready, fully decoupled, and resource-efficient containerized WordPres
 │   ├── smtp_port.txt                # Optional (go-notifier): SMTP port (465 or 587)
 │   ├── smtp_mail.txt                # Optional (go-notifier): SMTP username / sender email
 │   ├── smtp_password.txt            # Optional (go-notifier): SMTP password / app password
+│   ├── wp_super_admins.txt          # Optional (admin-control): HMAC-SHA512 super admin hashes
 │   └── ...                          # Optional (go-notifier): messenger secrets (telegram, etc.)
 ├── config/                          # Service configuration files
 │   ├── php/                         # PHP-FPM configuration
@@ -349,7 +350,7 @@ Control which platform MU-plugins are loaded using `WP_ENABLED_MU_PLUGINS` in `/
 * **Disable all:** `WP_ENABLED_MU_PLUGINS=none`.
 
 Available platform slugs:
-`acf-editor-control`, `core-cleanup`, `notify`, `performance`, `post-duplicator`, `reading-time`, `snippets`, `telemetry-blocker`, `translation-updates-disabler`, `transliterator`, `youtube`.
+`acf-editor-control`, `admin-control`, `core-cleanup`, `notify`, `performance`, `post-duplicator`, `reading-time`, `snippets`, `telemetry-blocker`, `translation-updates-disabler`, `transliterator`, `youtube`.
 
 ---
 
@@ -546,6 +547,107 @@ sudo find /home/${SITE_USER}/snippets -type f -exec chmod 0640 {} +
 * Routes all `wp_mail()` calls over an isolated UNIX socket to [`go-notifier`](https://github.com/webstudiobond/go-notifier) because the hardened PHP-FPM container has no shell or local mail binary (`sendmail`/`postfix`), eliminating the need for third-party SMTP plugins and keeping mail credentials out of the WordPress database.
 
 See [Deployment & Setup — Step 7](#7-mail--push-notifications-go-notifier) for full setup instructions.
+
+---
+
+### 12. Administrative Hardening, RBAC & Dashboard Sanitization (`wp-admin-control.php`)
+
+* **Slug:** `admin-control`
+* Source: [`examples/data/wp-content/mu-plugins/wp-admin-control.php.example`](examples/data/wp-content/mu-plugins/wp-admin-control.php.example)
+
+* Provides zero-knowledge cloaking and privilege protection for designated Super Administrator accounts using HMAC-SHA512 hashes loaded directly from Docker Secrets (`/run/secrets/wp_super_admins` keyed by `auth_salt`). Super administrators are completely invisible in user management tables, aggregate user counters, REST API endpoints, post author attributions, and frontend author archive queries, and are immune to modification, deletion, role reassignment, or password resets by standard administrators.
+* Enforces declarative, environment-driven Role-Based Access Control (RBAC) to block administrative pages, settings screens, and specific post/page IDs for non-exempt roles or users. Restricted pages are automatically removed from dashboard navigation and denied during form submissions (e.g., `options.php`), while restricted posts are excluded from post listings, count queries, and REST API collections.
+* Cleanses the administration dashboard interface: removes contextual "Help" tabs and "Screen Options" drawer, filters or reorders Admin Bar (toolbar) items, strips unwanted dashboard meta boxes, registers custom information widgets formatted with secure Micro-Markdown, adds custom Dashicon menu items, customizes admin menu ordering, forces hidden table columns or meta boxes, and safely hides arbitrary UI elements via sanitized CSS selectors.
+
+#### Super Administrator Setup
+
+Super Administrator identity is verified without storing plaintext logins or IDs in application files or database tables. Hashes are computed using HMAC-SHA512 over the payload `{ID}:{lowercase_user_login}` with the site's `auth_salt` secret key:
+
+```bash
+# 1. Generate an HMAC-SHA512 hash for user ID 1 and username "example_admin"
+printf "%s:%s" "1" "example_admin" | openssl dgst -sha512 -hmac "$(sudo cat /home/${SITE_USER}/secrets/auth_salt.txt)" | awk '{print $NF}' | sudo tee /home/${SITE_USER}/secrets/wp_super_admins.txt > /dev/null
+sudo chown root:${SITE_USER} /home/${SITE_USER}/secrets/wp_super_admins.txt
+sudo chmod 0440 /home/${SITE_USER}/secrets/wp_super_admins.txt
+```
+
+*(Multiple super administrator hashes can be placed on separate lines or separated by commas. Super administrators are automatically exempt from all dashboard restrictions, cosmetic rules, and access blocks).*
+
+To attach the secret to the WordPress container, uncomment `wp_super_admins` in `/home/${SITE_USER}/docker-compose.yaml`:
+
+1. Under `wordpress:` service:
+```yaml
+    secrets:
+      # ...
+      - wp_super_admins
+```
+
+2. Under top-level `secrets:`:
+```yaml
+secrets:
+  # ...
+  wp_super_admins:
+    file: ./secrets/wp_super_admins.txt
+```
+
+3. Apply changes:
+```bash
+docker compose -f /home/${SITE_USER}/docker-compose.yaml up -d
+```
+
+#### Rule Engine Syntax
+
+Restricted pages, posts, and cosmetic interface rules use a unified target-modifier syntax:
+`target1,target2|modifier1|modifier2; target3|modifier1`
+
+* **Audience modifiers** (evaluated against the currently authenticated user):
+  * `role:editor,author` — matches any user holding one of the specified roles.
+  * `!role:administrator` — matches any user who does **not** have the specified role.
+  * `user:2,5` — matches specific WordPress user IDs.
+  * `!user:1` — matches any user except the specified user IDs.
+  * `all` *(default when no modifiers are supplied)* — applies unconditionally to all non-super-admin users.
+
+#### Configuration (`wordpress.env`)
+
+* **Page & Post Restrictions:**
+  * `WP_ADMIN_RESTRICTED_PAGES=` — blocks administrative screens, settings pages, or specific query strings:
+    * `WP_ADMIN_RESTRICTED_PAGES="plugins.php,themes.php|!role:administrator; options.php,options-general.php|role:editor; edit.php?post_type=feedback|user:3"`
+  * `WP_ADMIN_RESTRICTED_POSTS=` — blocks editing, deleting, viewing in tables, and querying specific post/page IDs:
+    * `WP_ADMIN_RESTRICTED_POSTS="42,108|role:editor; 250|!role:administrator"`
+* **Interface, Privacy & Screen Options:**
+  * `WP_ADMIN_DISABLE_SCREEN_OPTIONS=false` — set to `true` (`1`, `on`, `yes`) to hide the "Screen Options" drawer and remove contextual "Help" tabs for all non-super-admins.
+  * `WP_ADMIN_DISABLE_GOOGLE_FONTS=false` — set to `true` (`1`, `on`, `yes`) to completely purge external Google Fonts (`fonts.googleapis.com` / `fonts.gstatic.com`) from the WordPress dashboard, stripping core `preconnect` hints from `admin_head` and dynamically dequeuing/deregistering third-party admin font stylesheets (such as Elementor's `elementor-one-admin-fonts`).
+* **Admin Bar (Toolbar) Control:**
+  * `WP_ADMIN_BAR_REMOVE_NODES=` — removes top-level Admin Bar node IDs:
+    * `WP_ADMIN_BAR_REMOVE_NODES="wp-logo,comments,updates|!role:administrator; customize|role:editor"`
+  * `WP_ADMIN_BAR_NEW_REMOVE=` — removes items from the `+ New` dropdown menu:
+    * `WP_ADMIN_BAR_NEW_REMOVE="user,media|role:author"`
+  * `WP_ADMIN_BAR_NEW_ORDER=` — reorders items under the `+ New` dropdown:
+    * `WP_ADMIN_BAR_NEW_ORDER="page,post,media"`
+* **Dashboard Widgets:**
+  * `WP_ADMIN_DASHBOARD_REMOVE_BOXES=` — removes standard or third-party dashboard meta boxes:
+    * `WP_ADMIN_DASHBOARD_REMOVE_BOXES="dashboard_quick_press,dashboard_primary,dashboard_activity,dashboard_right_now|!role:administrator"`
+  * Custom Dashboard Widgets (numbered `1`, `2`, ... until unset):
+    * `WP_ADMIN_DASHBOARD_WIDGET_1_TITLE="Editor Guidelines"`
+    * `WP_ADMIN_DASHBOARD_WIDGET_1_TARGET="role:editor,author"`
+    * `WP_ADMIN_DASHBOARD_WIDGET_1_CONTENT="Welcome! Review the editorial standards:\n- Read our [Publishing Rules](https://example.com/docs)\n- Contact support via [Email](mailto:support@example.org)\n- **Never** publish unreviewed drafts."`
+    *(Content supports lightweight Micro-Markdown: `**bold**`, `*italic*`, `[title](https://...)`, `[title](mailto:...)`, and `- list item`. External links are strictly sanitized and forced to `target="_blank" rel="noopener noreferrer"`).*
+* **Custom Navigation Menus & Ordering:**
+  * Custom Top-Level Menus (numbered `1`, `2`, ... until unset):
+    * `WP_ADMIN_CUSTOM_MENU_1_TITLE="Support & Documentation"`
+    * `WP_ADMIN_CUSTOM_MENU_1_ICON="dashicons-sos"`
+    * `WP_ADMIN_CUSTOM_MENU_1_POSITION="30"`
+    * `WP_ADMIN_CUSTOM_MENU_1_TARGET="role:editor"`
+    * `WP_ADMIN_CUSTOM_MENU_1_ITEMS="Documentation|https://example.com/docs; Submit Ticket|https://example.org/tickets"`
+  * `WP_ADMIN_MENU_ORDER=` — custom top-level admin menu order:
+    * `WP_ADMIN_MENU_ORDER="index.php,edit.php,edit.php?post_type=page,upload.php"`
+* **Table Columns & Edit Meta Boxes:**
+  * `WP_ADMIN_HIDDEN_COLUMNS=` — force-hides table columns on administrative list screens:
+    * `WP_ADMIN_HIDDEN_COLUMNS="author,tags,comments|role:editor; date|user:4"`
+  * `WP_ADMIN_HIDDEN_META_BOXES=` — force-hides meta boxes on post/page editing screens:
+    * `WP_ADMIN_HIDDEN_META_BOXES="postcustom,commentstatusdiv|role:editor"`
+* **CSS Selector Sanitization:**
+  * `WP_ADMIN_HIDE_SELECTORS=` — injects clean `display: none !important;` styles with strict CSS selector sanitization preventing code injection:
+    * `WP_ADMIN_HIDE_SELECTORS="#contextual-help-link-wrap, .notice-warning|!role:administrator"`
 
 </details>
 

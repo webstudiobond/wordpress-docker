@@ -1,0 +1,2205 @@
+<?php
+
+/**
+ * Plugin Name: WP Admin Control
+ * Description: Hardens and sanitizes WordPress administrative dashboard via role-based access control and Docker secrets.
+ * Version: 1.0.0
+ * Author: underhax
+ */
+
+declare(strict_types=1);
+
+/**
+ * Provides centralized administrative hardening, role-based access control,
+ * zero-knowledge super administrator protection, and dashboard interface sanitization.
+ *
+ * @phpstan-type AdminRule array{
+ *     targets: list<string>,
+ *     isAll: bool,
+ *     roles: list<string>,
+ *     invertedRoles: list<string>,
+ *     users: list<int>,
+ *     invertedUsers: list<int>
+ * }
+ */
+final class WpAdminControl
+{
+    public const string DEFAULT_SUPER_ADMIN_SECRETS_PATH = '/run/secrets/wp_super_admins';
+    public const string DEFAULT_SALT_SECRETS_PATH = '/run/secrets/auth_salt';
+
+    /**
+     * @var list<string>
+     */
+    private const array PROTECTED_POST_CAPABILITIES = [
+        'edit_post',
+        'delete_post',
+        'edit_page',
+        'delete_page',
+    ];
+
+    /**
+     * @var list<string>
+     */
+    private const array PROTECTED_USER_CAPABILITIES = [
+        'edit_user',
+        'delete_user',
+        'promote_user',
+        'remove_user',
+        'switch_to_user',
+    ];
+
+    private ?string $cachedSalt = null;
+
+    /**
+     * @var list<string>|null
+     */
+    private ?array $cachedSuperAdminHashes = null;
+
+    /**
+     * @var array<int, bool>
+     */
+    private array $superAdminCheckCache = [];
+
+    /**
+     * @var list<int>|null
+     */
+    private ?array $resolvedSuperAdminIds = null;
+
+    private bool $isResolvingSuperAdmins = false;
+
+    /**
+     * @var list<AdminRule>|null
+     */
+    private ?array $cachedRestrictedPageRules = null;
+
+    /**
+     * @var list<AdminRule>|null
+     */
+    private ?array $cachedRestrictedPostRules = null;
+
+    /**
+     * @param (callable(string): (string|false))|null $envGetter
+     * @param (callable(string): (string|false))|null $fileReader
+     * @param (callable(): (?object))|null $currentUserGetter
+     * @param (callable(int): (?object))|null $userDataGetter
+     * @param (callable(string, string|int): (?object))|null $userByGetter
+     * @param (callable(array<string, mixed>): list<object>)|null $usersGetter
+     * @param (callable(string, string|int, array<string, mixed>): void)|null $dieHandler
+     * @param (callable(): bool)|null $adminChecker
+     * @param (callable(): bool)|null $ajaxChecker
+     * @param (callable(): bool)|null $cronChecker
+     * @param (callable(string, callable|string, int, int): void)|null $actionAdder
+     * @param (callable(string, callable|string, int, int): void)|null $filterAdder
+     * @param (callable(string): bool)|null $menuRemover
+     * @param (callable(string, string): (array<int, mixed>|false))|null $submenuRemover
+     * @param (callable(string, string, string, string, callable|string, string, int|float|null): string)|null $menuAdder
+     * @param (callable(string, string, string, string, string, callable|string, int|float|null): (string|false))|null $submenuAdder
+     * @param (callable(string, string, callable, (callable|null), (array<string, mixed>|null), string, string): void)|null $dashboardWidgetAdder
+     * @param (callable(string, string|object, string): void)|null $metaBoxRemover
+     * @param (callable(): (?object))|null $currentScreenGetter
+     * @param (callable(string): void)|null $headerEchoer
+     * @param string|null $customSuperAdminFile
+     * @param string|null $customSaltFile
+     * @param (callable(string, callable|string, int): void)|null $actionRemover
+     * @param (callable(string): void)|null $styleDequeuer
+     * @param (callable(string): void)|null $styleDeregisterer
+     */
+    public function __construct(
+        private readonly mixed $envGetter = null,
+        private readonly mixed $fileReader = null,
+        private readonly mixed $currentUserGetter = null,
+        private readonly mixed $userDataGetter = null,
+        private readonly mixed $userByGetter = null,
+        private readonly mixed $usersGetter = null,
+        private readonly mixed $dieHandler = null,
+        private readonly mixed $adminChecker = null,
+        private readonly mixed $ajaxChecker = null,
+        private readonly mixed $cronChecker = null,
+        private readonly mixed $actionAdder = null,
+        private readonly mixed $filterAdder = null,
+        private readonly mixed $menuRemover = null,
+        private readonly mixed $submenuRemover = null,
+        private readonly mixed $menuAdder = null,
+        private readonly mixed $submenuAdder = null,
+        private readonly mixed $dashboardWidgetAdder = null,
+        private readonly mixed $metaBoxRemover = null,
+        private readonly mixed $currentScreenGetter = null,
+        private readonly mixed $headerEchoer = null,
+        private readonly ?string $customSuperAdminFile = null,
+        private readonly ?string $customSaltFile = null,
+        private readonly mixed $actionRemover = null,
+        private readonly mixed $styleDequeuer = null,
+        private readonly mixed $styleDeregisterer = null
+    ) {
+    }
+
+    public function registerHooks(): void
+    {
+        $this->addAction('admin_init', [$this, 'handleAdminInit'], 1, 0);
+        $this->addAction('admin_menu', [$this, 'handleAdminMenu'], 999, 0);
+        $this->addAction('admin_bar_menu', [$this, 'handleAdminBarMenu'], 999, 1);
+        $this->addAction('wp_dashboard_setup', [$this, 'handleDashboardSetup'], 999, 0);
+        $this->addAction('admin_head', [$this, 'handleAdminHead'], 999, 0);
+        $this->addAction('template_redirect', [$this, 'handleTemplateRedirect'], 1, 0);
+
+        if ($this->isGoogleFontsDisabled()) {
+            $this->addAction('admin_init', [$this, 'handleDisableGoogleFontsInit'], 1, 0);
+            $this->addAction('admin_head', [$this, 'handleDisableGoogleFontsHead'], 1, 0);
+            $this->addAction('admin_print_styles', [$this, 'handleDisableGoogleFontsStyles'], 1, 0);
+            $this->addAction('admin_print_styles', [$this, 'handleDisableGoogleFontsStyles'], 9999, 0);
+            $this->addFilter('wp_resource_hints', [$this, 'filterResourceHints'], 999, 2);
+        }
+
+        $this->addFilter('pre_get_users', [$this, 'filterPreGetUsers'], 10, 1);
+        $this->addFilter('views_users', [$this, 'filterViewsUsers'], 10, 1);
+        $this->addFilter('rest_user_query', [$this, 'filterRestUserQuery'], 10, 2);
+        $this->addFilter('rest_pre_dispatch', [$this, 'filterRestPreDispatch'], 10, 3);
+        $this->addFilter('rest_post_query', [$this, 'filterRestPostQuery'], 10, 2);
+        $this->addFilter('rest_prepare_post', [$this, 'filterRestPreparePost'], 10, 3);
+        $this->addFilter('rest_prepare_page', [$this, 'filterRestPreparePost'], 10, 3);
+        $this->addFilter('rest_comment_query', [$this, 'filterRestCommentQuery'], 10, 2);
+        $this->addFilter('rest_prepare_comment', [$this, 'filterRestPrepareComment'], 10, 3);
+
+        $this->addFilter('custom_menu_order', [$this, 'filterCustomMenuOrder'], 10, 1);
+        $this->addFilter('menu_order', [$this, 'filterMenuOrder'], 10, 1);
+
+        $this->addFilter('screen_options_show_screen', [$this, 'filterScreenOptionsShowScreen'], 10, 1);
+        $this->addFilter('hidden_meta_boxes', [$this, 'filterHiddenMetaBoxes'], 10, 2);
+        $this->addFilter('hidden_columns', [$this, 'filterHiddenColumns'], 10, 2);
+        $this->addFilter('default_hidden_columns', [$this, 'filterDefaultHiddenColumns'], 10, 2);
+
+        $this->addFilter('map_meta_cap', [$this, 'filterMapMetaCap'], 10, 4);
+        $this->addFilter('pre_get_posts', [$this, 'filterPreGetPosts'], 10, 1);
+        $this->addFilter('wp_count_posts', [$this, 'filterCountPosts'], 10, 3);
+        $this->addFilter('author_link', [$this, 'filterAuthorLink'], 10, 3);
+    }
+
+    public function isSuperAdmin(?object $user = null): bool
+    {
+        $userObj = $user ?? $this->getCurrentUser();
+        if ($userObj === null) {
+            return false;
+        }
+
+        $userId = (int) ($userObj->ID ?? 0);
+        $userLogin = (string) ($userObj->user_login ?? '');
+        if ($userId <= 0 || trim($userLogin) === '') {
+            return false;
+        }
+
+        if (isset($this->superAdminCheckCache[$userId])) {
+            return $this->superAdminCheckCache[$userId];
+        }
+
+        $salt = $this->getActiveSalt();
+        if ($salt === '') {
+            $this->superAdminCheckCache[$userId] = false;
+            return false;
+        }
+
+        $hashes = $this->getSuperAdminHashes();
+        if ($hashes === []) {
+            $this->superAdminCheckCache[$userId] = false;
+            return false;
+        }
+
+        $payload = (string) $userId . ':' . strtolower(trim($userLogin));
+        $computedHash = hash_hmac('sha512', $payload, $salt);
+
+        foreach ($hashes as $targetHash) {
+            if (hash_equals($targetHash, $computedHash)) {
+                $this->superAdminCheckCache[$userId] = true;
+                return true;
+            }
+        }
+
+        $this->superAdminCheckCache[$userId] = false;
+        return false;
+    }
+
+    /**
+     * @return list<int>
+     */
+    public function resolveSuperAdminIds(): array
+    {
+        if ($this->resolvedSuperAdminIds !== null) {
+            return $this->resolvedSuperAdminIds;
+        }
+
+        if ($this->isResolvingSuperAdmins) {
+            return [];
+        }
+
+        $this->isResolvingSuperAdmins = true;
+
+        try {
+            $administrators = $this->getUsers([
+                'role' => 'administrator',
+                'fields' => ['ID', 'user_login'],
+            ]);
+
+            $ids = [];
+            foreach ($administrators as $admin) {
+                if ($this->isSuperAdmin($admin)) {
+                    $adminId = (int) ($admin->ID ?? 0);
+                    if ($adminId > 0) {
+                        $ids[] = $adminId;
+                    }
+                }
+            }
+
+            $this->resolvedSuperAdminIds = array_values(array_unique($ids));
+            return $this->resolvedSuperAdminIds;
+        } finally {
+            $this->isResolvingSuperAdmins = false;
+        }
+    }
+
+    /**
+     * @return list<AdminRule>
+     */
+    public function parseRules(string $rawRules): array
+    {
+        $statements = explode(';', $rawRules);
+        $parsed = [];
+
+        foreach ($statements as $statement) {
+            $trimmedStatement = trim($statement);
+            if ($trimmedStatement === '') {
+                continue;
+            }
+
+            $segments = explode('|', $trimmedStatement);
+            $rawTargets = trim($segments[0]);
+            if ($rawTargets === '') {
+                continue;
+            }
+
+            $targets = [];
+            foreach (explode(',', $rawTargets) as $target) {
+                $trimmedTarget = trim($target);
+                if ($trimmedTarget !== '') {
+                    $targets[] = $trimmedTarget;
+                }
+            }
+
+            if ($targets === []) {
+                continue;
+            }
+
+            $isAll = false;
+            $roles = [];
+            $invertedRoles = [];
+            $users = [];
+            $invertedUsers = [];
+
+            $modifierSegments = array_slice($segments, 1);
+            if ($modifierSegments === []) {
+                $isAll = true;
+            } else {
+                foreach ($modifierSegments as $modifier) {
+                    $trimmedMod = trim($modifier);
+                    if ($trimmedMod === '' || $trimmedMod === 'all') {
+                        $isAll = true;
+                        continue;
+                    }
+
+                    if (str_starts_with($trimmedMod, 'role:')) {
+                        foreach (explode(',', substr($trimmedMod, 5)) as $role) {
+                            $r = strtolower(trim($role));
+                            if ($r !== '') {
+                                $roles[] = $r;
+                            }
+                        }
+                    } elseif (str_starts_with($trimmedMod, '!role:')) {
+                        foreach (explode(',', substr($trimmedMod, 6)) as $role) {
+                            $r = strtolower(trim($role));
+                            if ($r !== '') {
+                                $invertedRoles[] = $r;
+                            }
+                        }
+                    } elseif (str_starts_with($trimmedMod, 'user:')) {
+                        foreach (explode(',', substr($trimmedMod, 5)) as $userIdStr) {
+                            $uid = (int) trim($userIdStr);
+                            if ($uid > 0) {
+                                $users[] = $uid;
+                            }
+                        }
+                    } elseif (str_starts_with($trimmedMod, '!user:')) {
+                        foreach (explode(',', substr($trimmedMod, 6)) as $userIdStr) {
+                            $uid = (int) trim($userIdStr);
+                            if ($uid > 0) {
+                                $invertedUsers[] = $uid;
+                            }
+                        }
+                    }
+                }
+            }
+
+            $parsed[] = [
+                'targets' => array_values(array_unique($targets)),
+                'isAll' => $isAll,
+                'roles' => array_values(array_unique($roles)),
+                'invertedRoles' => array_values(array_unique($invertedRoles)),
+                'users' => array_values(array_unique($users)),
+                'invertedUsers' => array_values(array_unique($invertedUsers)),
+            ];
+        }
+
+        return $parsed;
+    }
+
+    /**
+     * @param AdminRule $rule
+     */
+    public function isUserRestrictedByRule(array $rule, ?object $user): bool
+    {
+        if ($user === null) {
+            return false;
+        }
+
+        if ($this->isSuperAdmin($user)) {
+            return false;
+        }
+
+        $userId = (int) ($user->ID ?? 0);
+        $userRoles = $this->extractUserRoles($user);
+
+        if ($userId > 0 && in_array($userId, $rule['invertedUsers'], true)) {
+            return false;
+        }
+
+        if (array_intersect($userRoles, $rule['invertedRoles']) !== []) {
+            return false;
+        }
+
+        if ($userId > 0 && in_array($userId, $rule['users'], true)) {
+            return true;
+        }
+
+        if (array_intersect($userRoles, $rule['roles']) !== []) {
+            return true;
+        }
+
+        if (
+            ($rule['invertedUsers'] !== [] || $rule['invertedRoles'] !== [])
+            && $rule['users'] === []
+            && $rule['roles'] === []
+        ) {
+            return true;
+        }
+
+        return $rule['isAll'];
+    }
+
+    /**
+     * @param AdminRule $rule
+     */
+    public function isUserMatchingCosmeticRule(array $rule, ?object $user): bool
+    {
+        if ($user === null) {
+            return false;
+        }
+
+        if ($rule['isAll']) {
+            return true;
+        }
+
+        $userId = (int) ($user->ID ?? 0);
+        $userRoles = $this->extractUserRoles($user);
+
+        if ($userId > 0 && in_array($userId, $rule['invertedUsers'], true)) {
+            return false;
+        }
+
+        if (array_intersect($userRoles, $rule['invertedRoles']) !== []) {
+            return false;
+        }
+
+        if ($userId > 0 && in_array($userId, $rule['users'], true)) {
+            return true;
+        }
+
+        if (array_intersect($userRoles, $rule['roles']) !== []) {
+            return true;
+        }
+
+        if (
+            ($rule['invertedUsers'] !== [] || $rule['invertedRoles'] !== [])
+            && $rule['users'] === []
+            && $rule['roles'] === []
+        ) {
+            return true;
+        }
+
+        return false;
+    }
+
+    public function handleAdminInit(): void
+    {
+        if (!$this->isUserLoggedIn() || $this->wpDoingAjax() || $this->wpDoingCron()) {
+            return;
+        }
+
+        if (!$this->isAdmin()) {
+            return;
+        }
+
+        $currentUser = $this->getCurrentUser();
+        $isCurrentSuperAdmin = $this->isSuperAdmin($currentUser);
+        $pagenow = $this->getPageNow();
+
+        if (!$isCurrentSuperAdmin) {
+            if ($pagenow === 'user-edit.php') {
+                $rawTargetId = $_REQUEST['user_id'] ?? $_REQUEST['user'] ?? $_GET['user_id'] ?? $_GET['user'] ?? $_POST['user_id'] ?? 0;
+                $targetUserId = is_numeric($rawTargetId) ? (int) $rawTargetId : 0;
+                if ($targetUserId > 0) {
+                    $targetUser = $this->getUserData($targetUserId);
+                    if ($targetUser !== null && $this->isSuperAdmin($targetUser)) {
+                        $this->dieInvalidUser('Invalid user ID.');
+                        return;
+                    }
+                }
+            }
+
+            $rawAction = $_REQUEST['action'] ?? '';
+            $action = is_string($rawAction) ? strtolower(trim($rawAction)) : '';
+            if ($action === '' || $action === '-1') {
+                $rawAction2 = $_REQUEST['action2'] ?? '';
+                $action = is_string($rawAction2) ? strtolower(trim($rawAction2)) : '';
+            }
+
+            if (
+                $action === 'delete'
+                || $action === 'deleteuser'
+                || $action === 'dodelete'
+                || $action === 'set-role'
+                || $action === 'resetpassword'
+            ) {
+                $deleteTargets = [];
+                if (isset($_REQUEST['user_id']) && is_numeric($_REQUEST['user_id'])) {
+                    $deleteTargets[] = (int) $_REQUEST['user_id'];
+                }
+                if (isset($_REQUEST['user']) && is_numeric($_REQUEST['user'])) {
+                    $deleteTargets[] = (int) $_REQUEST['user'];
+                }
+                if (isset($_REQUEST['users'])) {
+                    if (is_array($_REQUEST['users'])) {
+                        $rawUsers = $_REQUEST['users'];
+                    } elseif (is_string($_REQUEST['users'])) {
+                        $rawUsers = explode(',', $_REQUEST['users']);
+                    } else {
+                        $rawUsers = [];
+                    }
+                    foreach ($rawUsers as $u) {
+                        if (is_numeric($u)) {
+                            $deleteTargets[] = (int) $u;
+                        }
+                    }
+                }
+
+                foreach ($deleteTargets as $deleteTargetId) {
+                    if ($deleteTargetId > 0) {
+                        $targetUser = $this->getUserData($deleteTargetId);
+                        if ($targetUser !== null && $this->isSuperAdmin($targetUser)) {
+                            $this->dieInvalidUser('Invalid user ID.');
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+
+        if ($isCurrentSuperAdmin) {
+            return;
+        }
+
+        $restrictedPages = $this->getRestrictedPagesForCurrentUser();
+        if ($restrictedPages !== []) {
+            $lowerPagenow = strtolower($pagenow);
+            $normalizedRestricted = array_map('strtolower', $restrictedPages);
+
+            if ($lowerPagenow === 'options.php') {
+                $rawOptionPage = $_POST['option_page'] ?? $_GET['option_page'] ?? '';
+                $optionPage = is_string($rawOptionPage) ? strtolower(trim($rawOptionPage)) : '';
+                if ($optionPage !== '') {
+                    $mappedTarget = 'options-' . $optionPage . '.php';
+                    if (
+                        in_array($mappedTarget, $normalizedRestricted, true)
+                        || in_array($optionPage, $normalizedRestricted, true)
+                    ) {
+                        $this->dieForbidden('Sorry, you are not allowed to access this page.');
+                        return;
+                    }
+                } elseif (
+                    in_array('options.php', $normalizedRestricted, true)
+                    || in_array('options-general.php', $normalizedRestricted, true)
+                ) {
+                    $this->dieForbidden('Sorry, you are not allowed to access this page.');
+                    return;
+                }
+            }
+
+            if (in_array($lowerPagenow, $normalizedRestricted, true)) {
+                $this->dieForbidden('Sorry, you are not allowed to access this page.');
+                return;
+            }
+
+            $rawPageQuery = $_GET['page'] ?? '';
+            $pageQuery = is_string($rawPageQuery) ? strtolower(trim($rawPageQuery)) : '';
+            if ($pageQuery !== '' && in_array($pageQuery, $normalizedRestricted, true)) {
+                $this->dieForbidden('Sorry, you are not allowed to access this page.');
+                return;
+            }
+
+            $queryString = isset($_SERVER['QUERY_STRING']) && is_string($_SERVER['QUERY_STRING'])
+                ? trim($_SERVER['QUERY_STRING'])
+                : '';
+            $currentQueryParams = [];
+            if ($queryString !== '') {
+                parse_str($queryString, $currentQueryParams);
+            }
+            if ($pageQuery !== '' && !isset($currentQueryParams['page'])) {
+                $currentQueryParams['page'] = $pageQuery;
+            }
+
+            foreach ($restrictedPages as $target) {
+                if (!str_contains($target, '?')) {
+                    continue;
+                }
+
+                $targetParts = explode('?', $target, 2);
+                $targetPage = strtolower(trim($targetParts[0]));
+                if ($targetPage !== '' && $targetPage !== $lowerPagenow) {
+                    continue;
+                }
+
+                $targetQueryParams = [];
+                parse_str($targetParts[1], $targetQueryParams);
+                if ($targetQueryParams === []) {
+                    continue;
+                }
+
+                $matchesAllTargetParams = true;
+                foreach ($targetQueryParams as $paramKey => $paramVal) {
+                    $currentVal = $currentQueryParams[$paramKey] ?? null;
+                    if (!is_string($paramVal) || !is_string($currentVal) || strtolower($currentVal) !== strtolower($paramVal)) {
+                        $matchesAllTargetParams = false;
+                        break;
+                    }
+                }
+
+                if ($matchesAllTargetParams) {
+                    $this->dieForbidden('Sorry, you are not allowed to access this page.');
+                    return;
+                }
+            }
+        }
+
+        if ($pagenow === 'post.php') {
+            $rawPostAction = $_GET['action'] ?? '';
+            $postAction = is_string($rawPostAction) ? trim($rawPostAction) : '';
+            $rawPostId = $_GET['post'] ?? 0;
+            $postId = is_numeric($rawPostId) ? (int) $rawPostId : 0;
+            if ($postAction === 'edit' && $postId > 0 && $this->isPostRestrictedForCurrentUser($postId)) {
+                $this->dieForbidden('Sorry, you are not allowed to edit this item.');
+                return;
+            }
+        }
+    }
+
+    public function handleAdminMenu(): void
+    {
+        $currentUser = $this->getCurrentUser();
+        $isCurrentSuperAdmin = $this->isSuperAdmin($currentUser);
+
+        if (!$isCurrentSuperAdmin) {
+            $restrictedPages = $this->getRestrictedPagesForCurrentUser();
+            foreach ($restrictedPages as $target) {
+                $this->removeMenuPage($target);
+            }
+        }
+
+        for ($index = 1; ; $index++) {
+            $titleRaw = $this->getEnv('WP_ADMIN_CUSTOM_MENU_' . $index . '_TITLE');
+            if ($titleRaw === false || trim($titleRaw) === '') {
+                break;
+            }
+
+            $title = strip_tags(trim($titleRaw));
+            $iconRaw = $this->getEnv('WP_ADMIN_CUSTOM_MENU_' . $index . '_ICON');
+            $icon = ($iconRaw !== false && trim($iconRaw) !== '') ? trim($iconRaw) : 'dashicons-admin-generic';
+
+            $posRaw = $this->getEnv('WP_ADMIN_CUSTOM_MENU_' . $index . '_POSITION');
+            $position = ($posRaw !== false && is_numeric(trim($posRaw))) ? (float) trim($posRaw) : null;
+
+            $targetRaw = $this->getEnv('WP_ADMIN_CUSTOM_MENU_' . $index . '_TARGET');
+            $targetRuleStr = ($targetRaw !== false && trim($targetRaw) !== '') ? 'custom_menu|' . trim($targetRaw) : 'custom_menu|all';
+            $parsedTargetRules = $this->parseRules($targetRuleStr);
+
+            $isAllowed = true;
+            if ($parsedTargetRules !== [] && !$isCurrentSuperAdmin) {
+                $isAllowed = $this->isUserMatchingCosmeticRule($parsedTargetRules[0], $currentUser);
+            }
+
+            if (!$isAllowed) {
+                continue;
+            }
+
+            $itemsRaw = $this->getEnv('WP_ADMIN_CUSTOM_MENU_' . $index . '_ITEMS');
+            $items = ($itemsRaw !== false && trim($itemsRaw) !== '') ? explode(';', trim($itemsRaw)) : [];
+
+            $parentSlug = 'wp_admin_control_custom_menu_' . $index;
+            $firstUrl = '';
+
+            $subItems = [];
+            foreach ($items as $item) {
+                $trimmedItem = trim($item);
+                if ($trimmedItem === '') {
+                    continue;
+                }
+                $parts = explode('|', $trimmedItem);
+                $subTitle = trim($parts[0]);
+                $subUrl = isset($parts[1]) ? trim($parts[1]) : '';
+                if ($subTitle !== '' && $subUrl !== '') {
+                    if ($firstUrl === '') {
+                        $firstUrl = $subUrl;
+                    }
+                    $subItems[] = ['title' => $subTitle, 'url' => $subUrl];
+                }
+            }
+
+            $menuSlug = $firstUrl !== '' ? $firstUrl : $parentSlug;
+            $this->addMenuPage($title, $title, 'read', $menuSlug, '', $icon, $position);
+
+            foreach ($subItems as $sub) {
+                $this->addSubmenuPage($menuSlug, $sub['title'], $sub['title'], 'read', $sub['url'], null);
+            }
+        }
+    }
+
+    public function handleAdminBarMenu(object $wpAdminBar): void
+    {
+        if (!$this->isMethodCallable($wpAdminBar, 'remove_node')) {
+            return;
+        }
+
+        $currentUser = $this->getCurrentUser();
+        $removeNodesEnv = $this->getEnv('WP_ADMIN_BAR_REMOVE_NODES');
+        if ($removeNodesEnv !== false && trim($removeNodesEnv) !== '') {
+            $rules = $this->parseRules(trim($removeNodesEnv));
+            foreach ($rules as $rule) {
+                if ($this->isUserMatchingCosmeticRule($rule, $currentUser)) {
+                    foreach ($rule['targets'] as $nodeId) {
+                        $this->callObjectMethod($wpAdminBar, 'remove_node', [$nodeId]);
+                    }
+                }
+            }
+        }
+
+        $newRemoveEnv = $this->getEnv('WP_ADMIN_BAR_NEW_REMOVE');
+        if ($newRemoveEnv !== false && trim($newRemoveEnv) !== '') {
+            $newRules = $this->parseRules(trim($newRemoveEnv));
+            foreach ($newRules as $rule) {
+                if ($this->isUserMatchingCosmeticRule($rule, $currentUser)) {
+                    foreach ($rule['targets'] as $childId) {
+                        $this->callObjectMethod($wpAdminBar, 'remove_node', [$childId]);
+                    }
+                }
+            }
+        }
+
+        $newOrderEnv = $this->getEnv('WP_ADMIN_BAR_NEW_ORDER');
+        if (
+            $newOrderEnv !== false
+            && trim($newOrderEnv) !== ''
+            && $this->isMethodCallable($wpAdminBar, 'add_node')
+        ) {
+            $orderedIds = [];
+            foreach (explode(',', trim($newOrderEnv)) as $orderedId) {
+                $trimmedId = trim($orderedId);
+                if ($trimmedId !== '') {
+                    $orderedIds[] = $trimmedId;
+                }
+            }
+
+            if ($orderedIds !== []) {
+                $rawNodes = $this->callObjectMethod($wpAdminBar, 'get_nodes');
+
+                $childNodes = [];
+                if (is_array($rawNodes)) {
+                    foreach ($rawNodes as $nodeKey => $nodeObj) {
+                        if (is_object($nodeObj) && ((string) ($nodeObj->parent ?? '')) === 'new-content') {
+                            $id = (string) ($nodeObj->id ?? $nodeKey);
+                            $childNodes[$id] = (array) $nodeObj;
+                        }
+                    }
+                }
+
+                if ($childNodes !== []) {
+                    foreach (array_keys($childNodes) as $childId) {
+                        $this->callObjectMethod($wpAdminBar, 'remove_node', [$childId]);
+                    }
+
+                    $reordered = [];
+                    foreach ($orderedIds as $ordId) {
+                        if (isset($childNodes[$ordId])) {
+                            $reordered[$ordId] = $childNodes[$ordId];
+                        }
+                    }
+                    foreach ($childNodes as $childId => $nodeData) {
+                        if (!isset($reordered[$childId])) {
+                            $reordered[$childId] = $nodeData;
+                        }
+                    }
+
+                    foreach ($reordered as $nodeArgs) {
+                        $this->callObjectMethod($wpAdminBar, 'add_node', [$nodeArgs]);
+                    }
+                }
+            }
+        }
+    }
+
+    public function handleDashboardSetup(): void
+    {
+        $currentUser = $this->getCurrentUser();
+        $removeBoxesEnv = $this->getEnv('WP_ADMIN_DASHBOARD_REMOVE_BOXES');
+        if ($removeBoxesEnv !== false && trim($removeBoxesEnv) !== '') {
+            $rules = $this->parseRules(trim($removeBoxesEnv));
+            foreach ($rules as $rule) {
+                if ($this->isUserMatchingCosmeticRule($rule, $currentUser)) {
+                    foreach ($rule['targets'] as $boxId) {
+                        $this->removeMetaBox($boxId, 'dashboard', 'normal');
+                        $this->removeMetaBox($boxId, 'dashboard', 'side');
+                        $this->removeMetaBox($boxId, 'dashboard', 'advanced');
+                    }
+                }
+            }
+        }
+
+        for ($index = 1; ; $index++) {
+            $titleRaw = $this->getEnv('WP_ADMIN_DASHBOARD_WIDGET_' . $index . '_TITLE');
+            if ($titleRaw === false || trim($titleRaw) === '') {
+                break;
+            }
+
+            $title = strip_tags(trim($titleRaw));
+            $targetRaw = $this->getEnv('WP_ADMIN_DASHBOARD_WIDGET_' . $index . '_TARGET');
+            $targetRuleStr = ($targetRaw !== false && trim($targetRaw) !== '') ? 'widget|' . trim($targetRaw) : 'widget|all';
+            $parsedTargetRules = $this->parseRules($targetRuleStr);
+
+            $isAllowed = true;
+            if ($parsedTargetRules !== [] && !$this->isSuperAdmin($currentUser)) {
+                $isAllowed = $this->isUserMatchingCosmeticRule($parsedTargetRules[0], $currentUser);
+            }
+
+            if (!$isAllowed) {
+                continue;
+            }
+
+            $contentRaw = $this->getEnv('WP_ADMIN_DASHBOARD_WIDGET_' . $index . '_CONTENT');
+            $content = $contentRaw !== false ? trim($contentRaw) : '';
+            $renderedHtml = $this->renderMicroMarkdown($content);
+
+            $widgetId = 'wp_admin_control_widget_' . $index;
+            $this->addDashboardWidget($widgetId, $title, function () use ($renderedHtml): void {
+                $this->echoHtml($renderedHtml);
+            });
+        }
+    }
+
+    public function handleAdminHead(): void
+    {
+        $currentUser = $this->getCurrentUser();
+        $isCurrentSuperAdmin = $this->isSuperAdmin($currentUser);
+
+        $disableScreenOptionsEnv = $this->getEnv('WP_ADMIN_DISABLE_SCREEN_OPTIONS');
+        if (
+            !$isCurrentSuperAdmin
+            && $disableScreenOptionsEnv !== false
+            && filter_var($disableScreenOptionsEnv, FILTER_VALIDATE_BOOLEAN)
+        ) {
+            $screen = $this->getCurrentScreen();
+            if ($this->isMethodCallable($screen, 'remove_help_tabs')) {
+                $this->callObjectMethod($screen, 'remove_help_tabs');
+            }
+        }
+
+        $selectorsEnv = $this->getEnv('WP_ADMIN_HIDE_SELECTORS');
+        if ($selectorsEnv !== false && trim($selectorsEnv) !== '') {
+            $cleanSelectors = $this->sanitizeCssSelectors(trim($selectorsEnv));
+            if ($cleanSelectors !== '') {
+                $styleBlock = sprintf(
+                    '<style id="wp-admin-control-hide-selectors">%s { display: none !important; }</style>',
+                    $cleanSelectors
+                );
+                $this->echoHtml($styleBlock);
+            }
+        }
+    }
+
+    public function isGoogleFontsDisabled(): bool
+    {
+        $raw = $this->getEnv('WP_ADMIN_DISABLE_GOOGLE_FONTS');
+        if ($raw === false || trim($raw) === '') {
+            return false;
+        }
+
+        return in_array(strtolower(trim($raw)), ['true', '1', 'on', 'yes'], true);
+    }
+
+    public function handleDisableGoogleFontsInit(): void
+    {
+        $this->removeAction('admin_head', 'wp_resource_hints', 1);
+    }
+
+    public function handleDisableGoogleFontsHead(): void
+    {
+        $this->removeAction('admin_head', 'wp_resource_hints', 1);
+        $this->stripGoogleFontsStyles();
+    }
+
+    public function handleDisableGoogleFontsStyles(): void
+    {
+        $this->stripGoogleFontsStyles();
+    }
+
+    public function stripGoogleFontsStyles(): void
+    {
+        $wpStyles = $GLOBALS['wp_styles'] ?? null;
+        if (!is_object($wpStyles)) {
+            return;
+        }
+
+        $registered = isset($wpStyles->registered) && is_array($wpStyles->registered)
+            ? $wpStyles->registered
+            : [];
+
+        foreach ($registered as $handle => $styleObj) {
+            if (!is_object($styleObj)) {
+                continue;
+            }
+
+            $src = isset($styleObj->src) && is_string($styleObj->src) ? $styleObj->src : '';
+            if (str_contains($src, 'fonts.googleapis.com') || str_contains($src, 'fonts.gstatic.com')) {
+                $handleStr = (string) $handle;
+                $this->dequeueStyle($handleStr);
+                $this->deregisterStyle($handleStr);
+            }
+        }
+    }
+
+    /**
+     * @param array<int|string, mixed> $urls
+     * @return array<int, string>
+     */
+    public function filterResourceHints(array $urls, mixed $relationType = null): array
+    {
+        $filtered = [];
+        foreach ($urls as $url) {
+            if (
+                is_string($url)
+                && !str_contains($url, 'fonts.googleapis.com')
+                && !str_contains($url, 'fonts.gstatic.com')
+            ) {
+                $filtered[] = $url;
+            }
+        }
+
+        return $filtered;
+    }
+
+    public function filterPreGetUsers(object $query): void
+    {
+        if ($this->isResolvingSuperAdmins || $this->isSuperAdmin($this->getCurrentUser())) {
+            return;
+        }
+
+        if (!$this->isMethodCallable($query, 'get') || !$this->isMethodCallable($query, 'set')) {
+            return;
+        }
+
+        $superAdminIds = $this->resolveSuperAdminIds();
+        if ($superAdminIds === []) {
+            return;
+        }
+
+        $existingInclude = $this->callObjectMethod($query, 'get', ['include']);
+        if (is_array($existingInclude) && $existingInclude !== []) {
+            $cleanedInclude = [];
+            foreach ($existingInclude as $item) {
+                if (is_numeric($item)) {
+                    $itemInt = (int) $item;
+                    if (!in_array($itemInt, $superAdminIds, true)) {
+                        $cleanedInclude[] = $itemInt;
+                    }
+                }
+            }
+            $this->callObjectMethod($query, 'set', ['include', $cleanedInclude === [] ? [0] : $cleanedInclude]);
+        } elseif (is_string($existingInclude) && trim($existingInclude) !== '') {
+            $cleanedInclude = [];
+            foreach (explode(',', $existingInclude) as $item) {
+                if (is_numeric(trim($item))) {
+                    $itemInt = (int) trim($item);
+                    if (!in_array($itemInt, $superAdminIds, true)) {
+                        $cleanedInclude[] = $itemInt;
+                    }
+                }
+            }
+            $this->callObjectMethod($query, 'set', ['include', $cleanedInclude === [] ? [0] : $cleanedInclude]);
+        }
+
+        $existing = $this->callObjectMethod($query, 'get', ['exclude']);
+        /** @var list<int> $excludeList */
+        $excludeList = [];
+        if (is_array($existing)) {
+            foreach ($existing as $item) {
+                if (is_numeric($item)) {
+                    $excludeList[] = (int) $item;
+                }
+            }
+        } elseif (is_string($existing) && trim($existing) !== '') {
+            foreach (explode(',', $existing) as $item) {
+                if (is_numeric(trim($item))) {
+                    $excludeList[] = (int) trim($item);
+                }
+            }
+        }
+
+        $merged = array_values(array_unique(array_merge($excludeList, $superAdminIds)));
+        $this->callObjectMethod($query, 'set', ['exclude', $merged]);
+    }
+
+    /**
+     * @param array<string, mixed> $views
+     * @return array<string, mixed>
+     */
+    public function filterViewsUsers(array $views): array
+    {
+        if ($this->isSuperAdmin($this->getCurrentUser())) {
+            return $views;
+        }
+
+        $superAdminCount = count($this->resolveSuperAdminIds());
+        if ($superAdminCount === 0) {
+            return $views;
+        }
+
+        $adjusted = [];
+        foreach ($views as $key => $html) {
+            if (!is_string($html)) {
+                $adjusted[$key] = $html;
+                continue;
+            }
+
+            if ($key !== 'all' && $key !== 'administrator') {
+                $adjusted[$key] = $html;
+                continue;
+            }
+
+            $adjusted[$key] = (string) preg_replace_callback(
+                '/<span class="count">\(([\d,]+)\)<\/span>/',
+                static function (array $matches) use ($superAdminCount): string {
+                    $currentVal = (int) str_replace(',', '', $matches[1]);
+                    $newVal = max(0, $currentVal - $superAdminCount);
+                    return '<span class="count">(' . number_format($newVal) . ')</span>';
+                },
+                $html
+            );
+        }
+
+        return $adjusted;
+    }
+
+    /**
+     * @param array<string, mixed> $preparedArgs
+     * @return array<string, mixed>
+     */
+    public function filterRestUserQuery(array $preparedArgs, mixed $request = null): array
+    {
+        if ($this->isSuperAdmin($this->getCurrentUser())) {
+            return $preparedArgs;
+        }
+
+        $superAdminIds = $this->resolveSuperAdminIds();
+        if ($superAdminIds === []) {
+            return $preparedArgs;
+        }
+
+        $existingInclude = $preparedArgs['include'] ?? null;
+        if (is_array($existingInclude) && $existingInclude !== []) {
+            $cleanedInclude = [];
+            foreach ($existingInclude as $item) {
+                if (is_numeric($item)) {
+                    $itemInt = (int) $item;
+                    if (!in_array($itemInt, $superAdminIds, true)) {
+                        $cleanedInclude[] = $itemInt;
+                    }
+                }
+            }
+            $preparedArgs['include'] = $cleanedInclude === [] ? [0] : $cleanedInclude;
+        } elseif (is_string($existingInclude) && trim($existingInclude) !== '') {
+            $cleanedInclude = [];
+            foreach (explode(',', $existingInclude) as $item) {
+                if (is_numeric(trim($item))) {
+                    $itemInt = (int) trim($item);
+                    if (!in_array($itemInt, $superAdminIds, true)) {
+                        $cleanedInclude[] = $itemInt;
+                    }
+                }
+            }
+            $preparedArgs['include'] = $cleanedInclude === [] ? [0] : $cleanedInclude;
+        }
+
+        $existing = $preparedArgs['exclude'] ?? [];
+        /** @var list<int> $excludeList */
+        $excludeList = [];
+        if (is_array($existing)) {
+            foreach ($existing as $item) {
+                if (is_numeric($item)) {
+                    $excludeList[] = (int) $item;
+                }
+            }
+        }
+
+        $preparedArgs['exclude'] = array_values(array_unique(array_merge($excludeList, $superAdminIds)));
+        return $preparedArgs;
+    }
+
+    public function filterRestPreDispatch(mixed $result, mixed $server, mixed $request): mixed
+    {
+        if ($result !== null) {
+            return $result;
+        }
+
+        if (!$this->isMethodCallable($request, 'get_route')) {
+            return $result;
+        }
+
+        $rawRoute = $this->callObjectMethod($request, 'get_route');
+        $route = is_string($rawRoute) ? $rawRoute : '';
+        if (preg_match('#^/wp/v2/users/(\d+)(?:/.*)?$#', $route, $matches) === 1) {
+            $targetId = (int) $matches[1];
+            if ($targetId > 0) {
+                $targetUser = $this->getUserData($targetId);
+                if ($targetUser !== null && $this->isSuperAdmin($targetUser)) {
+                    $currentUser = $this->getCurrentUser();
+                    if (!$this->isSuperAdmin($currentUser)) {
+                        return new WP_Error(
+                            'rest_user_invalid_id',
+                            'Invalid user ID.',
+                            ['status' => 404]
+                        );
+                    }
+                }
+            }
+        }
+
+        return $result;
+    }
+
+    /**
+     * @param array<string, mixed> $preparedArgs
+     * @return array<string, mixed>
+     */
+    public function filterRestPostQuery(array $preparedArgs, mixed $request = null): array
+    {
+        if ($this->isSuperAdmin($this->getCurrentUser())) {
+            return $preparedArgs;
+        }
+
+        $superAdminIds = $this->resolveSuperAdminIds();
+        if ($superAdminIds !== []) {
+            if (isset($preparedArgs['author'])) {
+                $rawAuthor = $preparedArgs['author'];
+                if (is_array($rawAuthor)) {
+                    $cleanedAuthor = [];
+                    foreach ($rawAuthor as $item) {
+                        if (is_numeric($item)) {
+                            $itemInt = (int) $item;
+                            if (!in_array($itemInt, $superAdminIds, true)) {
+                                $cleanedAuthor[] = $itemInt;
+                            }
+                        }
+                    }
+                    $preparedArgs['author'] = $cleanedAuthor === [] ? [0] : $cleanedAuthor;
+                } elseif (is_numeric($rawAuthor) && in_array((int) $rawAuthor, $superAdminIds, true)) {
+                    $preparedArgs['author'] = [0];
+                }
+            }
+
+            if (isset($preparedArgs['author_exclude']) && is_array($preparedArgs['author_exclude'])) {
+                $authorExclude = [];
+                foreach ($preparedArgs['author_exclude'] as $item) {
+                    if (is_numeric($item)) {
+                        $authorExclude[] = (int) $item;
+                    }
+                }
+                $preparedArgs['author_exclude'] = array_values(array_unique(array_merge($authorExclude, $superAdminIds)));
+            }
+        }
+
+        $restrictedPostIds = $this->getRestrictedPostIdsForCurrentUser();
+        if ($restrictedPostIds === []) {
+            return $preparedArgs;
+        }
+
+        $existing = $preparedArgs['exclude'] ?? [];
+        /** @var list<int> $excludeList */
+        $excludeList = [];
+        if (is_array($existing)) {
+            foreach ($existing as $item) {
+                if (is_numeric($item)) {
+                    $excludeList[] = (int) $item;
+                }
+            }
+        }
+
+        $preparedArgs['exclude'] = array_values(array_unique(array_merge($excludeList, $restrictedPostIds)));
+        return $preparedArgs;
+    }
+
+    public function filterRestPreparePost(mixed $response, mixed $post, mixed $request): mixed
+    {
+        if (!is_object($response)) {
+            return $response;
+        }
+
+        $currentUser = $this->getCurrentUser();
+        if ($this->isSuperAdmin($currentUser)) {
+            return $response;
+        }
+
+        $authorId = 0;
+        if (is_object($post) && isset($post->post_author) && is_numeric($post->post_author)) {
+            $authorId = (int) $post->post_author;
+        }
+
+        if (
+            $authorId <= 0
+            && isset($response->data)
+            && is_array($response->data)
+            && isset($response->data['author'])
+            && is_numeric($response->data['author'])
+        ) {
+            $authorId = (int) $response->data['author'];
+        }
+
+        if ($authorId > 0 && in_array($authorId, $this->resolveSuperAdminIds(), true)) {
+            if (isset($response->data) && is_array($response->data)) {
+                $response->data['author'] = 0;
+            }
+            if ($this->isMethodCallable($response, 'remove_link')) {
+                $this->callObjectMethod($response, 'remove_link', ['author']);
+            }
+        }
+
+        return $response;
+    }
+
+    /**
+     * @param array<string, mixed> $preparedArgs
+      * @return array<string, mixed>
+      */
+    public function filterRestCommentQuery(array $preparedArgs, mixed $request = null): array
+    {
+        if ($this->isSuperAdmin($this->getCurrentUser())) {
+            return $preparedArgs;
+        }
+
+        $superAdminIds = $this->resolveSuperAdminIds();
+        if ($superAdminIds === []) {
+            return $preparedArgs;
+        }
+
+        if (isset($preparedArgs['author'])) {
+            $rawAuthor = $preparedArgs['author'];
+            if (is_array($rawAuthor)) {
+                $cleanedAuthor = [];
+                foreach ($rawAuthor as $item) {
+                    if (is_numeric($item)) {
+                        $itemInt = (int) $item;
+                        if (!in_array($itemInt, $superAdminIds, true)) {
+                            $cleanedAuthor[] = $itemInt;
+                        }
+                    }
+                }
+                $preparedArgs['author'] = $cleanedAuthor === [] ? [0] : $cleanedAuthor;
+            } elseif (is_numeric($rawAuthor) && in_array((int) $rawAuthor, $superAdminIds, true)) {
+                $preparedArgs['author'] = [0];
+            }
+        }
+
+        $existingExclude = $preparedArgs['author_exclude'] ?? [];
+        /** @var list<int> $excludeList */
+        $excludeList = [];
+        if (is_array($existingExclude)) {
+            foreach ($existingExclude as $item) {
+                if (is_numeric($item)) {
+                    $excludeList[] = (int) $item;
+                }
+            }
+        }
+
+        $preparedArgs['author_exclude'] = array_values(array_unique(array_merge($excludeList, $superAdminIds)));
+        return $preparedArgs;
+    }
+
+    public function filterRestPrepareComment(mixed $response, mixed $comment, mixed $request): mixed
+    {
+        if (!is_object($response)) {
+            return $response;
+        }
+
+        $currentUser = $this->getCurrentUser();
+        if ($this->isSuperAdmin($currentUser)) {
+            return $response;
+        }
+
+        $authorId = 0;
+        if (is_object($comment) && isset($comment->user_id) && is_numeric($comment->user_id)) {
+            $authorId = (int) $comment->user_id;
+        }
+
+        if (
+            $authorId <= 0
+            && isset($response->data)
+            && is_array($response->data)
+            && isset($response->data['author'])
+            && is_numeric($response->data['author'])
+        ) {
+            $authorId = (int) $response->data['author'];
+        }
+
+        if ($authorId > 0 && in_array($authorId, $this->resolveSuperAdminIds(), true)) {
+            if (isset($response->data) && is_array($response->data)) {
+                $response->data['author'] = 0;
+            }
+            if ($this->isMethodCallable($response, 'remove_link')) {
+                $this->callObjectMethod($response, 'remove_link', ['author']);
+            }
+        }
+
+        return $response;
+    }
+
+    public function filterCustomMenuOrder(mixed $custom): bool
+    {
+        $rawOrder = $this->getEnv('WP_ADMIN_MENU_ORDER');
+        if ($rawOrder !== false && trim($rawOrder) !== '') {
+            return true;
+        }
+
+        return (bool) $custom;
+    }
+
+    /**
+     * @param array<int|string, mixed> $menuOrder
+     * @return array<int|string, mixed>
+     */
+    public function filterMenuOrder(array $menuOrder): array
+    {
+        $rawOrder = $this->getEnv('WP_ADMIN_MENU_ORDER');
+        if ($rawOrder === false || trim($rawOrder) === '') {
+            return $menuOrder;
+        }
+
+        $customItems = [];
+        foreach (explode(',', trim($rawOrder)) as $item) {
+            $trimmed = trim($item);
+            if ($trimmed !== '') {
+                $customItems[] = $trimmed;
+            }
+        }
+
+        if ($customItems === []) {
+            return $menuOrder;
+        }
+
+        $reordered = [];
+        foreach ($customItems as $custom) {
+            if (in_array($custom, $menuOrder, true)) {
+                $reordered[] = $custom;
+            }
+        }
+
+        foreach ($menuOrder as $existing) {
+            if (!in_array($existing, $reordered, true)) {
+                $reordered[] = $existing;
+            }
+        }
+
+        return $reordered;
+    }
+
+    public function filterScreenOptionsShowScreen(mixed $show): bool
+    {
+        if ($this->isSuperAdmin($this->getCurrentUser())) {
+            return true;
+        }
+
+        $raw = $this->getEnv('WP_ADMIN_DISABLE_SCREEN_OPTIONS');
+        if ($raw !== false && filter_var($raw, FILTER_VALIDATE_BOOLEAN)) {
+            return false;
+        }
+
+        return (bool) $show;
+    }
+
+    /**
+     * @param array<int|string, mixed> $hidden
+     * @return array<int|string, mixed>
+     */
+    public function filterHiddenMetaBoxes(array $hidden, mixed $screen = null): array
+    {
+        return $this->applyHiddenList('WP_ADMIN_HIDDEN_META_BOXES', $hidden);
+    }
+
+    /**
+     * @param array<int|string, mixed> $hidden
+     * @return array<int|string, mixed>
+     */
+    public function filterHiddenColumns(array $hidden, mixed $screen = null): array
+    {
+        return $this->applyHiddenList('WP_ADMIN_HIDDEN_COLUMNS', $hidden);
+    }
+
+    /**
+     * @param array<int|string, mixed> $hidden
+     * @return array<int|string, mixed>
+     */
+    public function filterDefaultHiddenColumns(array $hidden, mixed $screen = null): array
+    {
+        return $this->applyHiddenList('WP_ADMIN_HIDDEN_COLUMNS', $hidden);
+    }
+
+    /**
+     * @param array<int, string> $caps
+     * @param array<int, mixed> $args
+     * @return array<int, string>
+     */
+    public function filterMapMetaCap(array $caps, string $cap, int $userId, array $args): array
+    {
+        if (in_array($cap, self::PROTECTED_USER_CAPABILITIES, true)) {
+            $targetUserId = isset($args[0]) && is_numeric($args[0]) ? (int) $args[0] : 0;
+            if ($targetUserId > 0) {
+                $targetUser = $this->getUserData($targetUserId);
+                if ($targetUser !== null && $this->isSuperAdmin($targetUser)) {
+                    $currentUser = $this->getUserData($userId);
+                    if ($currentUser === null || !$this->isSuperAdmin($currentUser)) {
+                        return ['do_not_allow'];
+                    }
+                }
+            }
+            return $caps;
+        }
+
+        if (!in_array($cap, self::PROTECTED_POST_CAPABILITIES, true)) {
+            return $caps;
+        }
+
+        $targetPostId = isset($args[0]) && is_numeric($args[0]) ? (int) $args[0] : 0;
+        if ($targetPostId <= 0) {
+            return $caps;
+        }
+
+        $user = $this->getUserData($userId);
+        if ($user === null || $this->isSuperAdmin($user)) {
+            return $caps;
+        }
+
+        if ($this->isPostRestrictedForUser($targetPostId, $user)) {
+            return ['do_not_allow'];
+        }
+
+        return $caps;
+    }
+
+    public function filterPreGetPosts(object $query): void
+    {
+        if ($this->isSuperAdmin($this->getCurrentUser())) {
+            return;
+        }
+
+        if (!$this->isAdmin()) {
+            $authorVal = $this->callObjectMethod($query, 'get', ['author']);
+            $authorId = is_numeric($authorVal) ? (int) $authorVal : 0;
+            $rawAuthorName = $this->callObjectMethod($query, 'get', ['author_name']);
+            $authorName = is_string($rawAuthorName) ? trim($rawAuthorName) : '';
+
+            $isTargetSuperAdmin = false;
+            if ($authorId > 0 && in_array($authorId, $this->resolveSuperAdminIds(), true)) {
+                $isTargetSuperAdmin = true;
+            } elseif ($authorName !== '') {
+                $authorUser = $this->getUserBy('slug', $authorName) ?? $this->getUserBy('login', $authorName);
+                if ($authorUser !== null && $this->isSuperAdmin($authorUser)) {
+                    $isTargetSuperAdmin = true;
+                }
+            }
+
+            if ($isTargetSuperAdmin) {
+                $this->callObjectMethod($query, 'set_404');
+                return;
+            }
+
+            $superAdminIds = $this->resolveSuperAdminIds();
+            if ($superAdminIds !== []) {
+                $existingAuthorNotIn = $this->callObjectMethod($query, 'get', ['author__not_in']);
+                /** @var list<int> $authorNotInList */
+                $authorNotInList = [];
+                if (is_array($existingAuthorNotIn)) {
+                    foreach ($existingAuthorNotIn as $item) {
+                        if (is_numeric($item)) {
+                            $authorNotInList[] = (int) $item;
+                        }
+                    }
+                }
+                $this->callObjectMethod(
+                    $query,
+                    'set',
+                    ['author__not_in', array_values(array_unique(array_merge($authorNotInList, $superAdminIds)))]
+                );
+            }
+            return;
+        }
+
+        if (!(bool) $this->callObjectMethod($query, 'is_main_query')) {
+            return;
+        }
+
+        if ($this->getPageNow() !== 'edit.php') {
+            return;
+        }
+
+        $restrictedPostIds = $this->getRestrictedPostIdsForCurrentUser();
+        if ($restrictedPostIds === []) {
+            return;
+        }
+
+        $existing = $this->callObjectMethod($query, 'get', ['post__not_in']);
+        /** @var list<int> $notInList */
+        $notInList = [];
+        if (is_array($existing)) {
+            foreach ($existing as $item) {
+                if (is_numeric($item)) {
+                    $notInList[] = (int) $item;
+                }
+            }
+        }
+
+        $this->callObjectMethod(
+            $query,
+            'set',
+            ['post__not_in', array_values(array_unique(array_merge($notInList, $restrictedPostIds)))]
+        );
+    }
+
+    public function filterCountPosts(object $counts, string $type, string $perm): object
+    {
+        if ($this->isSuperAdmin($this->getCurrentUser())) {
+            return $counts;
+        }
+
+        if (!$this->isAdmin()) {
+            return $counts;
+        }
+
+        $restrictedPostIds = $this->getRestrictedPostIdsForCurrentUser();
+        if ($restrictedPostIds === []) {
+            return $counts;
+        }
+
+        $countDeductions = count($restrictedPostIds);
+        if (isset($counts->publish) && is_numeric($counts->publish)) {
+            $counts->publish = (string) max(0, (int) $counts->publish - $countDeductions);
+        }
+
+        return $counts;
+    }
+
+    public function handleTemplateRedirect(): void
+    {
+        if ($this->isAdmin() || $this->isSuperAdmin($this->getCurrentUser())) {
+            return;
+        }
+
+        if (function_exists('is_author') && is_author()) {
+            $authorId = function_exists('get_queried_object_id') ? (int) get_queried_object_id() : 0;
+            if ($authorId > 0 && in_array($authorId, $this->resolveSuperAdminIds(), true)) {
+                if (function_exists('status_header')) {
+                    status_header(404);
+                }
+                if (function_exists('nocache_headers')) {
+                    nocache_headers();
+                }
+                $wpQuery = $GLOBALS['wp_query'] ?? null;
+                if ($wpQuery !== null) {
+                    $this->callObjectMethod($wpQuery, 'set_404');
+                }
+            }
+        }
+    }
+
+    public function filterAuthorLink(string $link, int $authorId, string $authorNicename = ''): string
+    {
+        if ($this->isSuperAdmin($this->getCurrentUser())) {
+            return $link;
+        }
+
+        if (in_array($authorId, $this->resolveSuperAdminIds(), true)) {
+            return function_exists('home_url') ? (string) home_url('/') : '/';
+        }
+
+        return $link;
+    }
+
+    public function renderMicroMarkdown(string $markdown): string
+    {
+        if (trim($markdown) === '') {
+            return '';
+        }
+
+        $html = htmlspecialchars($markdown, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+
+        $html = (string) preg_replace(
+            '/\[(.*?)\]\((https:\/\/[^\s\)\"\']+)\)/',
+            '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>',
+            $html
+        );
+        $html = (string) preg_replace(
+            '/\[(.*?)\]\((mailto:[^\s\)\"\']+)\)/',
+            '<a href="$2">$1</a>',
+            $html
+        );
+
+        $html = (string) preg_replace('/\*\*(.+?)\*\*/s', '<strong>$1</strong>', $html);
+        $html = (string) preg_replace('/\*([^\*\n]+?)\*/', '<em>$1</em>', $html);
+
+        $lines = explode("\n", str_replace(["\r\n", "\r"], "\n", $html));
+        $formattedLines = [];
+        $inList = false;
+
+        foreach ($lines as $line) {
+            $trimmed = trim($line);
+            if (str_starts_with($trimmed, '- ')) {
+                if (!$inList) {
+                    $formattedLines[] = '<ul>';
+                    $inList = true;
+                }
+                $formattedLines[] = '<li>' . substr($trimmed, 2) . '</li>';
+            } else {
+                if ($inList) {
+                    $formattedLines[] = '</ul>';
+                    $inList = false;
+                }
+                $formattedLines[] = $line;
+            }
+        }
+
+        if ($inList) {
+            $formattedLines[] = '</ul>';
+        }
+
+        $result = implode("\n", $formattedLines);
+        return nl2br($result, false);
+    }
+
+    public function sanitizeCssSelectors(string $raw): string
+    {
+        $tokens = explode(',', $raw);
+        $clean = [];
+
+        foreach ($tokens as $token) {
+            $trimmed = trim($token);
+            if ($trimmed === '') {
+                continue;
+            }
+
+            if (preg_match('/^[a-zA-Z0-9_\-\.\#\:\s\>\+\~\*\[\]\=\^\|\$\"\']+$/', $trimmed) === 1) {
+                if (!str_contains($trimmed, '{') && !str_contains($trimmed, '}') && !str_contains($trimmed, '<')) {
+                    $clean[] = $trimmed;
+                }
+            }
+        }
+
+        return implode(', ', $clean);
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function getRestrictedPagesForCurrentUser(): array
+    {
+        $currentUser = $this->getCurrentUser();
+        if ($currentUser === null || $this->isSuperAdmin($currentUser)) {
+            return [];
+        }
+
+        if ($this->cachedRestrictedPageRules === null) {
+            $raw = $this->getEnv('WP_ADMIN_RESTRICTED_PAGES');
+            $this->cachedRestrictedPageRules = ($raw !== false && trim($raw) !== '')
+                ? $this->parseRules(trim($raw))
+                : [];
+        }
+
+        $targets = [];
+        foreach ($this->cachedRestrictedPageRules as $rule) {
+            if ($this->isUserRestrictedByRule($rule, $currentUser)) {
+                foreach ($rule['targets'] as $t) {
+                    $targets[] = $t;
+                }
+            }
+        }
+
+        return array_values(array_unique($targets));
+    }
+
+    /**
+     * @return list<int>
+     */
+    private function getRestrictedPostIdsForCurrentUser(): array
+    {
+        $currentUser = $this->getCurrentUser();
+        if ($currentUser === null || $this->isSuperAdmin($currentUser)) {
+            return [];
+        }
+
+        if ($this->cachedRestrictedPostRules === null) {
+            $raw = $this->getEnv('WP_ADMIN_RESTRICTED_POSTS');
+            $this->cachedRestrictedPostRules = ($raw !== false && trim($raw) !== '')
+                ? $this->parseRules(trim($raw))
+                : [];
+        }
+
+        $postIds = [];
+        foreach ($this->cachedRestrictedPostRules as $rule) {
+            if ($this->isUserRestrictedByRule($rule, $currentUser)) {
+                foreach ($rule['targets'] as $target) {
+                    if (is_numeric($target)) {
+                        $pid = (int) $target;
+                        if ($pid > 0) {
+                            $postIds[] = $pid;
+                        }
+                    }
+                }
+            }
+        }
+
+        return array_values(array_unique($postIds));
+    }
+
+    private function isPostRestrictedForCurrentUser(int $postId): bool
+    {
+        $restrictedIds = $this->getRestrictedPostIdsForCurrentUser();
+        return in_array($postId, $restrictedIds, true);
+    }
+
+    private function isPostRestrictedForUser(int $postId, object $user): bool
+    {
+        if ($this->isSuperAdmin($user)) {
+            return false;
+        }
+
+        if ($this->cachedRestrictedPostRules === null) {
+            $raw = $this->getEnv('WP_ADMIN_RESTRICTED_POSTS');
+            $this->cachedRestrictedPostRules = ($raw !== false && trim($raw) !== '')
+                ? $this->parseRules(trim($raw))
+                : [];
+        }
+
+        foreach ($this->cachedRestrictedPostRules as $rule) {
+            if ($this->isUserRestrictedByRule($rule, $user)) {
+                foreach ($rule['targets'] as $target) {
+                    if (is_numeric($target) && (int) $target === $postId) {
+                        return true;
+                    }
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * @param array<int|string, mixed> $existingList
+     * @return array<int|string, mixed>
+     */
+    private function applyHiddenList(string $envKey, array $existingList): array
+    {
+        $currentUser = $this->getCurrentUser();
+        if ($currentUser === null || $this->isSuperAdmin($currentUser)) {
+            return $existingList;
+        }
+
+        $raw = $this->getEnv($envKey);
+        if ($raw === false || trim($raw) === '') {
+            return $existingList;
+        }
+
+        $rules = $this->parseRules(trim($raw));
+        $toHide = [];
+        foreach ($rules as $rule) {
+            if ($this->isUserRestrictedByRule($rule, $currentUser)) {
+                foreach ($rule['targets'] as $target) {
+                    $toHide[] = $target;
+                }
+            }
+        }
+
+        if ($toHide === []) {
+            return $existingList;
+        }
+
+        /** @var list<string> $merged */
+        $merged = [];
+        foreach ($existingList as $item) {
+            if (is_string($item)) {
+                $merged[] = $item;
+            }
+        }
+        foreach ($toHide as $item) {
+            $merged[] = $item;
+        }
+
+        return array_values(array_unique($merged));
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function extractUserRoles(object $user): array
+    {
+        $rawRoles = $user->roles ?? [];
+        if (!is_array($rawRoles)) {
+            return [];
+        }
+
+        $roles = [];
+        foreach ($rawRoles as $r) {
+            if (is_string($r) && trim($r) !== '') {
+                $roles[] = strtolower(trim($r));
+            }
+        }
+
+        return array_values(array_unique($roles));
+    }
+
+    private function getActiveSalt(): string
+    {
+        if ($this->cachedSalt !== null) {
+            return $this->cachedSalt;
+        }
+
+        $path = $this->customSaltFile ?? self::DEFAULT_SALT_SECRETS_PATH;
+        $content = $this->readFile($path);
+        if ($content !== false && trim($content) !== '') {
+            $this->cachedSalt = trim($content);
+            return $this->cachedSalt;
+        }
+
+        $this->cachedSalt = '';
+        return '';
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function getSuperAdminHashes(): array
+    {
+        if ($this->cachedSuperAdminHashes !== null) {
+            return $this->cachedSuperAdminHashes;
+        }
+
+        $path = $this->customSuperAdminFile ?? self::DEFAULT_SUPER_ADMIN_SECRETS_PATH;
+        $content = $this->readFile($path);
+        if ($content !== false && trim($content) !== '') {
+            $lines = preg_split('/[\r\n,]+/', $content);
+            $hashes = [];
+            if ($lines !== false) {
+                foreach ($lines as $line) {
+                    $trimmed = strtolower(trim($line));
+                    if ($trimmed !== '' && preg_match('/^[a-f0-9]{128}$/', $trimmed) === 1) {
+                        $hashes[] = $trimmed;
+                    }
+                }
+            }
+            if ($hashes !== []) {
+                $this->cachedSuperAdminHashes = array_values(array_unique($hashes));
+                return $this->cachedSuperAdminHashes;
+            }
+        }
+
+        $this->cachedSuperAdminHashes = [];
+        return [];
+    }
+
+    private function getEnv(string $name): string|false
+    {
+        if (is_callable($this->envGetter)) {
+            return ($this->envGetter)($name);
+        }
+
+        return getenv($name, true);
+    }
+
+    private function readFile(string $path): string|false
+    {
+        if (is_callable($this->fileReader)) {
+            return ($this->fileReader)($path);
+        }
+
+        return is_file($path) ? file_get_contents($path) : false;
+    }
+
+    private function getCurrentUser(): ?object
+    {
+        if (is_callable($this->currentUserGetter)) {
+            return ($this->currentUserGetter)();
+        }
+
+        if (function_exists('wp_get_current_user')) {
+            $u = wp_get_current_user();
+            return is_object($u) ? $u : null;
+        }
+
+        return null;
+    }
+
+    private function getUserData(int $id): ?object
+    {
+        if (is_callable($this->userDataGetter)) {
+            return ($this->userDataGetter)($id);
+        }
+
+        if (function_exists('get_userdata')) {
+            $u = get_userdata($id);
+            return is_object($u) ? $u : null;
+        }
+
+        return null;
+    }
+
+    private function getUserBy(string $field, string|int $value): ?object
+    {
+        if (is_callable($this->userByGetter)) {
+            return ($this->userByGetter)($field, $value);
+        }
+
+        if (function_exists('get_user_by')) {
+            $u = get_user_by($field, $value);
+            return is_object($u) ? $u : null;
+        }
+
+        return null;
+    }
+
+    /**
+     * @param array<string, mixed> $args
+     * @return list<object>
+     */
+    private function getUsers(array $args): array
+    {
+        if (is_callable($this->usersGetter)) {
+            return ($this->usersGetter)($args);
+        }
+
+        if (function_exists('get_users')) {
+            $users = get_users($args);
+            if (is_array($users)) {
+                $result = [];
+                foreach ($users as $u) {
+                    if (is_object($u)) {
+                        $result[] = $u;
+                    }
+                }
+                return $result;
+            }
+        }
+
+        return [];
+    }
+
+    private function dieForbidden(string $message): void
+    {
+        if (is_callable($this->dieHandler)) {
+            ($this->dieHandler)($message, 403, ['response' => 403]);
+            return;
+        }
+
+        if (function_exists('wp_die')) {
+            wp_die($message, '', ['response' => 403]);
+        }
+    }
+
+    private function dieInvalidUser(string $message): void
+    {
+        if (is_callable($this->dieHandler)) {
+            ($this->dieHandler)($message, 500, ['response' => 500]);
+            return;
+        }
+
+        if (function_exists('wp_die')) {
+            wp_die($message);
+        }
+    }
+
+    private function isMethodCallable(mixed $target, string $method): bool
+    {
+        if (!is_object($target)) {
+            return false;
+        }
+
+        $callback = [$target, $method];
+
+        return is_callable($callback);
+    }
+
+    /**
+     * @param array<int, mixed> $arguments
+     */
+    private function callObjectMethod(mixed $target, string $method, array $arguments = []): mixed
+    {
+        if (is_object($target)) {
+            $callback = [$target, $method];
+            if (is_callable($callback)) {
+                return $callback(...$arguments);
+            }
+        }
+
+        return null;
+    }
+
+    private function isUserLoggedIn(): bool
+    {
+        if (function_exists('is_user_logged_in')) {
+            return is_user_logged_in();
+        }
+
+        return $this->getCurrentUser() !== null;
+    }
+
+    private function isAdmin(): bool
+    {
+        if (is_callable($this->adminChecker)) {
+            return ($this->adminChecker)();
+        }
+
+        if (function_exists('is_admin')) {
+            return is_admin();
+        }
+
+        return false;
+    }
+
+    private function wpDoingAjax(): bool
+    {
+        if (is_callable($this->ajaxChecker)) {
+            return ($this->ajaxChecker)();
+        }
+
+        if (function_exists('wp_doing_ajax')) {
+            return wp_doing_ajax();
+        }
+
+        return defined('DOING_AJAX') && DOING_AJAX;
+    }
+
+    private function wpDoingCron(): bool
+    {
+        if (is_callable($this->cronChecker)) {
+            return ($this->cronChecker)();
+        }
+
+        if (function_exists('wp_doing_cron')) {
+            return wp_doing_cron();
+        }
+
+        return defined('DOING_CRON') && DOING_CRON;
+    }
+
+    private function getPageNow(): string
+    {
+        $pagenow = $GLOBALS['pagenow'] ?? '';
+        return is_string($pagenow) ? $pagenow : '';
+    }
+
+    private function getCurrentScreen(): ?object
+    {
+        if (is_callable($this->currentScreenGetter)) {
+            return ($this->currentScreenGetter)();
+        }
+
+        if (function_exists('get_current_screen')) {
+            $screen = get_current_screen();
+            return is_object($screen) ? $screen : null;
+        }
+
+        return null;
+    }
+
+    private function removeMenuPage(string $menuSlug): void
+    {
+        if (str_contains($menuSlug, ':')) {
+            $parts = explode(':', $menuSlug, 2);
+            $this->removeSubmenuPage($parts[0], $parts[1]);
+            return;
+        }
+
+        if (is_callable($this->menuRemover)) {
+            ($this->menuRemover)($menuSlug);
+            return;
+        }
+
+        if (function_exists('remove_menu_page')) {
+            remove_menu_page($menuSlug);
+        }
+    }
+
+    private function removeSubmenuPage(string $menuSlug, string $submenuSlug): void
+    {
+        if (is_callable($this->submenuRemover)) {
+            ($this->submenuRemover)($menuSlug, $submenuSlug);
+            return;
+        }
+
+        if (function_exists('remove_submenu_page')) {
+            remove_submenu_page($menuSlug, $submenuSlug);
+        }
+    }
+
+    private function addMenuPage(
+        string $pageTitle,
+        string $menuTitle,
+        string $capability,
+        string $menuSlug,
+        callable|string $callback = '',
+        string $iconUrl = '',
+        int|float|null $position = null
+    ): void {
+        if (is_callable($this->menuAdder)) {
+            ($this->menuAdder)($pageTitle, $menuTitle, $capability, $menuSlug, $callback, $iconUrl, $position);
+            return;
+        }
+
+        if (function_exists('add_menu_page')) {
+            add_menu_page($pageTitle, $menuTitle, $capability, $menuSlug, $callback, $iconUrl, $position);
+        }
+    }
+
+    private function addSubmenuPage(
+        string $parentSlug,
+        string $pageTitle,
+        string $menuTitle,
+        string $capability,
+        string $menuSlug,
+        callable|string|null $callback = null
+    ): void {
+        if (is_callable($this->submenuAdder)) {
+            ($this->submenuAdder)($parentSlug, $pageTitle, $menuTitle, $capability, $menuSlug, $callback ?? '', null);
+            return;
+        }
+
+        if (function_exists('add_submenu_page')) {
+            add_submenu_page($parentSlug, $pageTitle, $menuTitle, $capability, $menuSlug, $callback ?? '');
+        }
+    }
+
+    private function removeMetaBox(string $id, string|object $screen, string $context): void
+    {
+        if (is_callable($this->metaBoxRemover)) {
+            ($this->metaBoxRemover)($id, $screen, $context);
+            return;
+        }
+
+        if (function_exists('remove_meta_box')) {
+            remove_meta_box($id, $screen, $context);
+        }
+    }
+
+    private function addDashboardWidget(string $widgetId, string $widgetName, callable $callback): void
+    {
+        if (is_callable($this->dashboardWidgetAdder)) {
+            ($this->dashboardWidgetAdder)($widgetId, $widgetName, $callback, null, null, 'normal', 'core');
+            return;
+        }
+
+        if (function_exists('wp_add_dashboard_widget')) {
+            wp_add_dashboard_widget($widgetId, $widgetName, $callback);
+        }
+    }
+
+    private function echoHtml(string $html): void
+    {
+        if (is_callable($this->headerEchoer)) {
+            ($this->headerEchoer)($html);
+            return;
+        }
+
+        echo $html;
+    }
+
+    private function addAction(string $tag, callable|string $callback, int $priority = 10, int $acceptedArgs = 1): void
+    {
+        if (is_callable($this->actionAdder)) {
+            ($this->actionAdder)($tag, $callback, $priority, $acceptedArgs);
+            return;
+        }
+
+        if (function_exists('add_action')) {
+            add_action($tag, $callback, $priority, $acceptedArgs);
+        }
+    }
+
+    private function addFilter(string $tag, callable|string $callback, int $priority = 10, int $acceptedArgs = 1): void
+    {
+        if (is_callable($this->filterAdder)) {
+            ($this->filterAdder)($tag, $callback, $priority, $acceptedArgs);
+            return;
+        }
+
+        if (function_exists('add_filter')) {
+            add_filter($tag, $callback, $priority, $acceptedArgs);
+        }
+    }
+
+    private function removeAction(string $tag, callable|string $callback, int $priority = 10): void
+    {
+        if (is_callable($this->actionRemover)) {
+            ($this->actionRemover)($tag, $callback, $priority);
+            return;
+        }
+
+        if (function_exists('remove_action')) {
+            remove_action($tag, $callback, $priority);
+        }
+    }
+
+    private function dequeueStyle(string $handle): void
+    {
+        if (is_callable($this->styleDequeuer)) {
+            ($this->styleDequeuer)($handle);
+            return;
+        }
+
+        if (function_exists('wp_dequeue_style')) {
+            wp_dequeue_style($handle);
+        }
+    }
+
+    private function deregisterStyle(string $handle): void
+    {
+        if (is_callable($this->styleDeregisterer)) {
+            ($this->styleDeregisterer)($handle);
+            return;
+        }
+
+        if (function_exists('wp_deregister_style')) {
+            wp_deregister_style($handle);
+        }
+    }
+}
+
+if (function_exists('add_action') || function_exists('add_filter')) {
+    (new WpAdminControl())->registerHooks();
+}

@@ -1,4 +1,16 @@
-.PHONY: php-lint phpcs phpcs-fix phpstan php-test php-verify php-coverage go-check go-test go-vulncheck go-verify go-coverage go-build docker-lint compose-validate security-trivy secrets-scan verify clean coverage
+.PHONY: composer-install composer-update composer-lock composer-audit php-lint phpcs phpcs-fix phpstan php-test php-verify php-coverage go-check go-test go-vulncheck go-verify go-coverage go-build docker-lint compose-validate security-trivy secrets-scan verify clean coverage
+
+composer-install:
+	composer install --no-interaction --prefer-dist
+
+composer-update:
+	composer update --no-interaction --prefer-dist
+
+composer-lock:
+	composer update --no-install --no-interaction
+
+composer-audit:
+	composer audit
 
 php-lint:
 	find . -path ./vendor -prune -o -type f \( -name "*.php" -o -name "*.php.example" \) -print0 | xargs -0 -n1 php -l

@@ -4,6 +4,9 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/stubs.php';
 spl_autoload_register(static function (string $class): void {
+    if ($class === 'WP_Error') {
+        require_once __DIR__ . '/../stubs/WP_Error.php';
+    }
     if ($class === 'WpNotifyMailer') {
         require_once __DIR__ . '/../examples/data/wp-content/mu-plugins/wp-notify.php.example';
     }
@@ -36,6 +39,9 @@ spl_autoload_register(static function (string $class): void {
     }
     if ($class === 'WpSnippets') {
         require_once __DIR__ . '/../examples/data/wp-content/mu-plugins/wp-snippets.php.example';
+    }
+    if ($class === 'WpAdminControl') {
+        require_once __DIR__ . '/../examples/data/wp-content/mu-plugins/wp-admin-control.php.example';
     }
     if ($class === 'SbsPlatformLoader') {
         require_once __DIR__ . '/../examples/data/wp-content/mu-plugins/sbs-loader.php.example';

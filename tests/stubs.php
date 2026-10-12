@@ -643,3 +643,179 @@ function ensure_snippets_stubs(): void
         }
     }
 }
+
+function ensure_admin_control_stubs(): void
+{
+    ensure_wordpress_stubs();
+    ensure_wordpress_filter_stubs();
+    ensure_cleanup_stubs();
+    ensure_telemetry_stubs();
+    ensure_duplicator_stubs();
+    ensure_snippets_stubs();
+
+    if (!function_exists('wp_get_current_user')) {
+        function wp_get_current_user(): object
+        {
+            $user = $GLOBALS['test_current_user'] ?? null;
+            return is_object($user) ? $user : (object) ['roles' => []];
+        }
+    }
+
+    if (!function_exists('get_userdata')) {
+        function get_userdata(int $userId): ?object
+        {
+            $users = $GLOBALS['test_userdata'] ?? [];
+            if (is_array($users) && isset($users[$userId]) && is_object($users[$userId])) {
+                return $users[$userId];
+            }
+            return null;
+        }
+    }
+
+    if (!function_exists('get_user_by')) {
+        function get_user_by(string $field, string|int $value): ?object
+        {
+            $user = $GLOBALS['test_user_by'][$field][$value] ?? null;
+            return is_object($user) ? $user : null;
+        }
+    }
+
+    if (!function_exists('get_users')) {
+        /**
+         * @param array<string, mixed> $args
+         * @return list<object>
+         */
+        function get_users(array $args): array
+        {
+            $users = $GLOBALS['test_users_list'] ?? [];
+            return is_array($users) ? array_values($users) : [];
+        }
+    }
+
+    if (!function_exists('get_current_screen')) {
+        function get_current_screen(): ?object
+        {
+            $screen = $GLOBALS['test_current_screen'] ?? null;
+            return is_object($screen) ? $screen : null;
+        }
+    }
+
+    if (!function_exists('remove_menu_page')) {
+        function remove_menu_page(string $menuSlug): void
+        {
+            $GLOBALS['test_removed_menu_pages'][] = $menuSlug;
+        }
+    }
+
+    if (!function_exists('remove_submenu_page')) {
+        function remove_submenu_page(string $menuSlug, string $submenuSlug): void
+        {
+            $GLOBALS['test_removed_submenu_pages'][] = [$menuSlug, $submenuSlug];
+        }
+    }
+
+    if (!function_exists('add_menu_page')) {
+        function add_menu_page(
+            string $pageTitle,
+            string $menuTitle,
+            string $capability,
+            string $menuSlug,
+            callable|string $callback = '',
+            string $iconUrl = '',
+            int|float|null $position = null
+        ): string {
+            $GLOBALS['test_added_menu_pages'][] = [
+                'page_title' => $pageTitle,
+                'menu_title' => $menuTitle,
+                'capability' => $capability,
+                'menu_slug' => $menuSlug,
+                'callback' => $callback,
+                'icon_url' => $iconUrl,
+                'position' => $position,
+            ];
+            return 'hook_' . $menuSlug;
+        }
+    }
+
+    if (!function_exists('add_submenu_page')) {
+        function add_submenu_page(
+            string $parentSlug,
+            string $pageTitle,
+            string $menuTitle,
+            string $capability,
+            string $menuSlug,
+            callable|string|null $callback = null,
+            int|float|null $position = null
+        ): string {
+            $GLOBALS['test_added_submenu_pages'][] = [
+                'parent_slug' => $parentSlug,
+                'page_title' => $pageTitle,
+                'menu_title' => $menuTitle,
+                'capability' => $capability,
+                'menu_slug' => $menuSlug,
+                'callback' => $callback,
+                'position' => $position,
+            ];
+            return 'subhook_' . $menuSlug;
+        }
+    }
+
+    if (!function_exists('remove_meta_box')) {
+        function remove_meta_box(string $id, string|object $screen, string $context): void
+        {
+            $GLOBALS['test_removed_meta_boxes'][] = [$id, $screen, $context];
+        }
+    }
+
+    if (!function_exists('wp_add_dashboard_widget')) {
+        function wp_add_dashboard_widget(string $widgetId, string $widgetName, callable $callback): void
+        {
+            $GLOBALS['test_dashboard_widgets'][$widgetId] = [
+                'name' => $widgetName,
+                'callback' => $callback,
+            ];
+        }
+    }
+
+    if (!function_exists('wp_doing_cron')) {
+        function wp_doing_cron(): bool
+        {
+            return (bool) ($GLOBALS['test_wp_doing_cron'] ?? false);
+        }
+    }
+
+    if (!function_exists('status_header')) {
+        function status_header(int $code): void
+        {
+            $GLOBALS['test_status_header'] = $code;
+        }
+    }
+
+    if (!function_exists('nocache_headers')) {
+        function nocache_headers(): void
+        {
+            $GLOBALS['test_nocache_headers_called'] = true;
+        }
+    }
+
+    if (!function_exists('get_queried_object_id')) {
+        function get_queried_object_id(): int
+        {
+            return (int) ($GLOBALS['test_queried_object_id'] ?? 0);
+        }
+    }
+
+    if (!function_exists('home_url')) {
+        function home_url(string $path = ''): string
+        {
+            return 'https://example.com' . $path;
+        }
+    }
+
+    if (!function_exists('is_author')) {
+        function is_author(mixed $author = ''): bool
+        {
+            return (bool) ($GLOBALS['test_is_author'] ?? false);
+        }
+    }
+}
