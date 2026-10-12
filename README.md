@@ -561,16 +561,25 @@ See [Deployment & Setup — Step 7](#7-mail--push-notifications-go-notifier) for
 
 #### Super Administrator Setup
 
-Super Administrator identity is verified without storing plaintext logins or IDs in application files or database tables. Hashes are computed using HMAC-SHA512 over the payload `{ID}:{lowercase_user_login}` with the site's `auth_salt` secret key:
+Super Administrator identity is verified without storing plaintext logins or IDs in application files or database tables. Hashes are computed using HMAC-SHA512 over the payload `{ID}:{lowercase_user_login}` with the site's `auth_salt` secret key.
+
+#### Hash Generation Command
+To provision or rotate super administrator identities without leaking credentials into shell history, process tables (`ps`), or the clipboard, administrators generate hashes interactively via `wp-guard`:
 
 ```bash
-# 1. Generate an HMAC-SHA512 hash for user ID 1 and username "example_admin"
-printf "%s:%s" "1" "example_admin" | openssl dgst -sha512 -hmac "$(sudo cat /home/${SITE_USER}/secrets/auth_salt.txt)" | awk '{print $NF}' | sudo tee /home/${SITE_USER}/secrets/wp_super_admins.txt > /dev/null
+# Provision or overwrite secret with the initial super administrator:
+docker compose -f /home/${SITE_USER}/docker-compose.yaml run --rm --no-deps init \
+  wp-guard superadmin hash | sudo tee /home/${SITE_USER}/secrets/wp_super_admins.txt > /dev/null
+
+# Append an additional super administrator (each hash is stored on a separate line):
+docker compose -f /home/${SITE_USER}/docker-compose.yaml run --rm --no-deps init \
+  wp-guard superadmin hash | sudo tee -a /home/${SITE_USER}/secrets/wp_super_admins.txt > /dev/null
+
 sudo chown root:${SITE_USER} /home/${SITE_USER}/secrets/wp_super_admins.txt
 sudo chmod 0440 /home/${SITE_USER}/secrets/wp_super_admins.txt
 ```
 
-*(Multiple super administrator hashes can be placed on separate lines or separated by commas. Super administrators are automatically exempt from all dashboard restrictions, cosmetic rules, and access blocks).*
+*(Super administrators are automatically exempt from all dashboard restrictions, cosmetic rules, and access blocks).*
 
 To attach the secret to the WordPress container, uncomment `wp_super_admins` in `/home/${SITE_USER}/docker-compose.yaml`:
 
