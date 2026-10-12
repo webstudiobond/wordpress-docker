@@ -77,6 +77,18 @@ func ExtractWpVersion(versionFilePath string) (string, error) {
 	return string(matches[1]), nil
 }
 
+func isIgnoredDonorFile(relPath string) bool {
+	if strings.Contains(relPath, "/") {
+		return false
+	}
+	switch relPath {
+	case "readme.html", "license.txt":
+		return true
+	default:
+		return strings.HasPrefix(relPath, "wp-config")
+	}
+}
+
 func scanCoreFiles(ctx context.Context, donorDir string) (map[string]string, error) {
 	coreFiles := make(map[string]string, 2048)
 	cleanedDonor := filepath.Clean(donorDir)
@@ -100,6 +112,10 @@ func scanCoreFiles(ctx context.Context, donorDir string) (map[string]string, err
 		relPath := strings.TrimPrefix(path, cleanedDonor)
 		relPath = strings.TrimPrefix(relPath, string(filepath.Separator))
 		relPath = filepath.ToSlash(relPath)
+
+		if isIgnoredDonorFile(relPath) {
+			return nil
+		}
 
 		hash, hashErr := ComputeFileHash(path)
 		if hashErr != nil {

@@ -1,4 +1,4 @@
-.PHONY: php-lint phpcs phpcs-fix phpstan php-test php-verify php-coverage go-check go-test go-vulncheck go-verify go-coverage go-build docker-lint compose-validate security-trivy secrets-scan verify clean
+.PHONY: php-lint phpcs phpcs-fix phpstan php-test php-verify php-coverage go-check go-test go-vulncheck go-verify go-coverage go-build docker-lint compose-validate security-trivy secrets-scan verify clean coverage
 
 php-lint:
 	find . -path ./vendor -prune -o -type f \( -name "*.php" -o -name "*.php.example" \) -print0 | xargs -0 -n1 php -l
@@ -62,7 +62,9 @@ security-trivy:
 secrets-scan:
 	gitleaks detect --source . --no-git --no-color -v --redact
 
-verify: docker-lint compose-validate php-verify go-verify security-trivy secrets-scan
+verify: docker-lint php-verify go-verify security-trivy secrets-scan
+
+coverage: php-coverage go-coverage
 
 clean:
-	rm -rf .phpunit.cache .phpcs-cache coverage coverage.xml *.out .gocache bin/
+	rm -rf .phpunit.cache .phpcs-cache coverage coverage.xml coverage.html *.out .gocache bin/

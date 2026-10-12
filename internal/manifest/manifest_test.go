@@ -30,6 +30,16 @@ func createTestDonorFixture(t *testing.T) (donorDir, muDir string) {
 		t.Fatalf("failed to write index.php: %v", err)
 	}
 
+	if err := os.WriteFile(filepath.Join(donorDir, "readme.html"), []byte("readme"), 0o600); err != nil {
+		t.Fatalf("failed to write readme.html: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(donorDir, "license.txt"), []byte("license"), 0o600); err != nil {
+		t.Fatalf("failed to write license.txt: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(donorDir, "wp-config-sample.php"), []byte("sample"), 0o600); err != nil {
+		t.Fatalf("failed to write wp-config-sample.php: %v", err)
+	}
+
 	wpContent := filepath.Join(donorDir, "wp-content")
 	if err := os.MkdirAll(wpContent, 0o750); err != nil {
 		t.Fatalf("failed to create wp-content: %v", err)
@@ -154,11 +164,47 @@ func TestGenerate(t *testing.T) {
 	if _, exists := m.CoreFiles["index.php"]; !exists {
 		t.Errorf("m.CoreFiles missing index.php")
 	}
+	if _, exists := m.CoreFiles["readme.html"]; exists {
+		t.Errorf("m.CoreFiles unexpectedly includes readme.html")
+	}
+	if _, exists := m.CoreFiles["license.txt"]; exists {
+		t.Errorf("m.CoreFiles unexpectedly includes license.txt")
+	}
+	if _, exists := m.CoreFiles["wp-config-sample.php"]; exists {
+		t.Errorf("m.CoreFiles unexpectedly includes wp-config-sample.php")
+	}
 	if _, exists := m.CoreFiles["wp-content/ignored.php"]; exists {
 		t.Errorf("m.CoreFiles unexpectedly includes wp-content/ignored.php")
 	}
 	if _, exists := m.MuPlugins["wp-notify.php"]; !exists {
 		t.Errorf("m.MuPlugins missing wp-notify.php")
+	}
+}
+
+func TestIsIgnoredDonorFile(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		relPath string
+		want    bool
+	}{
+		{relPath: "readme.html", want: true},
+		{relPath: "license.txt", want: true},
+		{relPath: "wp-config-sample.php", want: true},
+		{relPath: "wp-config.php", want: true},
+		{relPath: "index.php", want: false},
+		{relPath: "wp-login.php", want: false},
+		{relPath: "wp-includes/license.txt", want: false},
+		{relPath: "wp-admin/readme.html", want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.relPath, func(t *testing.T) {
+			t.Parallel()
+			if got := isIgnoredDonorFile(tt.relPath); got != tt.want {
+				t.Errorf("isIgnoredDonorFile(%q) = %v, want %v", tt.relPath, got, tt.want)
+			}
+		})
 	}
 }
 

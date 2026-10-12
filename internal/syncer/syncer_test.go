@@ -372,6 +372,12 @@ func TestSyncRootFiles(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(srcDir, "wp-config-sample.php"), []byte("sample"), 0o600); err != nil {
 		t.Fatalf("failed creating wp-config-sample.php: %v", err)
 	}
+	if err := os.WriteFile(filepath.Join(srcDir, "readme.html"), []byte("readme"), 0o600); err != nil {
+		t.Fatalf("failed creating readme.html: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(srcDir, "license.txt"), []byte("license"), 0o600); err != nil {
+		t.Fatalf("failed creating license.txt: %v", err)
+	}
 
 	if err := os.WriteFile(filepath.Join(dstDir, "wp-config.php"), []byte("production config"), 0o600); err != nil {
 		t.Fatalf("failed creating target wp-config.php: %v", err)
@@ -392,6 +398,12 @@ func TestSyncRootFiles(t *testing.T) {
 
 	if _, err := os.Stat(filepath.Join(dstDir, "wp-config-sample.php")); !os.IsNotExist(err) {
 		t.Fatalf("expected wp-config-sample.php to be skipped")
+	}
+	if _, err := os.Stat(filepath.Join(dstDir, "readme.html")); !os.IsNotExist(err) {
+		t.Fatalf("expected readme.html to be skipped")
+	}
+	if _, err := os.Stat(filepath.Join(dstDir, "license.txt")); !os.IsNotExist(err) {
+		t.Fatalf("expected license.txt to be skipped")
 	}
 }
 

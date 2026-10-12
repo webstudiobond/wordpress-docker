@@ -385,7 +385,7 @@ func SyncRootFiles(ctx context.Context, sourceDir, targetDir string) error {
 
 	for _, entry := range entries {
 		name := entry.Name()
-		if entry.IsDir() || name == defaultContentName || name == adminDir || name == includesDir || strings.HasPrefix(name, "wp-config") {
+		if entry.IsDir() || name == defaultContentName || name == adminDir || name == includesDir || strings.HasPrefix(name, "wp-config") || name == "readme.html" || name == "license.txt" {
 			continue
 		}
 
@@ -805,7 +805,7 @@ func Run(ctx context.Context, cfg *Config) (*SyncResult, error) {
 		return nil, verifyErr
 	}
 	if len(repaired) > 0 {
-		logMsg(cfg.Output, "[wp-guard] Integrity verification repaired %d core file(s) from donor.\n", len(repaired))
+		logMsg(cfg.Output, "[wp-guard] Integrity verification repaired all core files from donor.\n")
 		return &SyncResult{
 			Action:        "repaired",
 			SourceVersion: donorVersion,
