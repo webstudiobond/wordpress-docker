@@ -583,7 +583,7 @@ The stack enforces strict host-level privilege separation across three ownership
   * `data/wp-content/mu-plugins/sbs-loader.php` — `0640` (mounted `:ro` into containers)
 * **`${SITE_USER}:${SITE_USER}` (Runtime Writable Storage):**
   * `.wp-cli/`, `mariadb/`, `tmp/` — `0700`
-  * `data/` — top-level directory `0700`, internal directories `0750`, internal files `0640`
+  * `data/` — top-level directory `0700`, `wp-admin/` and `wp-includes/` `0700`, content directories (`wp-content/`) `0750`, internal files `0640`
 
 ### One-Shot Permission Reset (Running Stack)
 
@@ -611,6 +611,8 @@ sudo chmod 0440 /home/${SITE_USER}/secrets/*.txt
 sudo chown -R ${SITE_USER}:${SITE_USER} /home/${SITE_USER}/{.wp-cli,data,mariadb,tmp}
 sudo chmod 0700 /home/${SITE_USER}/{.wp-cli,data,mariadb,tmp}
 sudo find /home/${SITE_USER}/data -mindepth 1 -type d -exec chmod 0750 {} +
+[ -d /home/${SITE_USER}/data/wp-admin ] && sudo chmod 0700 /home/${SITE_USER}/data/wp-admin
+[ -d /home/${SITE_USER}/data/wp-includes ] && sudo chmod 0700 /home/${SITE_USER}/data/wp-includes
 sudo find /home/${SITE_USER}/data -type f -exec chmod 0640 {} +
 
 # 4. Read-only platform loader (root:${SITE_USER} 0640)
@@ -1058,6 +1060,8 @@ sudo -u ${SITE_USER} tar -xzf /home/${SITE_USER}/wordpress-files.tar.gz \
 sudo chown -R ${SITE_USER}:${SITE_USER} /home/${SITE_USER}/data
 sudo chmod 0700 /home/${SITE_USER}/data
 sudo find /home/${SITE_USER}/data -mindepth 1 -type d -exec chmod 0750 {} +
+[ -d /home/${SITE_USER}/data/wp-admin ] && sudo chmod 0700 /home/${SITE_USER}/data/wp-admin
+[ -d /home/${SITE_USER}/data/wp-includes ] && sudo chmod 0700 /home/${SITE_USER}/data/wp-includes
 sudo find /home/${SITE_USER}/data -type f -exec chmod 0640 {} +
 [ -f /home/${SITE_USER}/data/wp-content/mu-plugins/sbs-loader.php ] && sudo chown root:${SITE_USER} /home/${SITE_USER}/data/wp-content/mu-plugins/sbs-loader.php && sudo chmod 0640 /home/${SITE_USER}/data/wp-content/mu-plugins/sbs-loader.php
 ```
