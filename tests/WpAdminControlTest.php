@@ -37,6 +37,8 @@ final class WpAdminControlTest extends TestCase
     private array $addedSubmenuPages = [];
     /** @var list<array{0: string, 1: string|object, 2: string}> */
     private array $removedMetaBoxes = [];
+    /** @var list<array{0: string, 1: callable|string, 2: int}> */
+    private array $removedActions = [];
     /** @var array<string, array{name: string, callback: callable}> */
     private array $addedDashboardWidgets = [];
     private ?object $currentScreen = null;
@@ -59,6 +61,7 @@ final class WpAdminControlTest extends TestCase
         $this->addedMenuPages = [];
         $this->addedSubmenuPages = [];
         $this->removedMetaBoxes = [];
+        $this->removedActions = [];
         $this->addedDashboardWidgets = [];
         $this->currentScreen = null;
         $this->echoedHtml = '';
@@ -72,6 +75,7 @@ final class WpAdminControlTest extends TestCase
 
     protected function tearDown(): void
     {
+        putenv('WP_ADMIN_SIDEBAR_MENU_CONTROL');
         putenv('WP_ADMIN_RESTRICTED_PAGES');
         putenv('WP_ADMIN_MENU_ORDER');
         putenv('WP_ADMIN_BAR_REMOVE_NODES');
@@ -81,13 +85,15 @@ final class WpAdminControlTest extends TestCase
         putenv('WP_ADMIN_HIDDEN_META_BOXES');
         putenv('WP_ADMIN_HIDDEN_COLUMNS');
         putenv('WP_ADMIN_DASHBOARD_REMOVE_BOXES');
+        putenv('WP_ADMIN_DASHBOARD_WIDGETS_REMOVE');
+        putenv('WP_ADMIN_SIDEBAR_MENU_SEPARATORS_AFTER');
         putenv('WP_ADMIN_RESTRICTED_POSTS');
         putenv('WP_ADMIN_HIDE_SELECTORS');
 
         for ($i = 1; $i <= 5; $i++) {
+            putenv('WP_ADMIN_CUSTOM_MENU_' . $i . '_ID');
             putenv('WP_ADMIN_CUSTOM_MENU_' . $i . '_TITLE');
             putenv('WP_ADMIN_CUSTOM_MENU_' . $i . '_ICON');
-            putenv('WP_ADMIN_CUSTOM_MENU_' . $i . '_POSITION');
             putenv('WP_ADMIN_CUSTOM_MENU_' . $i . '_TARGET');
             putenv('WP_ADMIN_CUSTOM_MENU_' . $i . '_ITEMS');
 
@@ -97,6 +103,13 @@ final class WpAdminControlTest extends TestCase
         }
 
         unset(
+            $GLOBALS['menu'],
+            $GLOBALS['submenu'],
+            $GLOBALS['_parent_pages'],
+            $GLOBALS['parent_file'],
+            $GLOBALS['submenu_file'],
+            $GLOBALS['pagenow'],
+            $GLOBALS['plugin_page'],
             $GLOBALS['test_current_user'],
             $GLOBALS['test_userdata'],
             $GLOBALS['test_user_by'],
@@ -113,6 +126,8 @@ final class WpAdminControlTest extends TestCase
             $GLOBALS['test_queried_object_id'],
             $GLOBALS['test_is_author'],
             $GLOBALS['test_wp_doing_cron'],
+            $GLOBALS['test_throw_on_redirect'],
+            $GLOBALS['test_redirect_location'],
             $GLOBALS['wp_query']
         );
 
@@ -159,6 +174,14 @@ final class WpAdminControlTest extends TestCase
             },
             submenuRemover: $dependencies['submenuRemover'] ?? function (string $parent, string $sub): void {
                 $this->removedSubmenuPages[] = [$parent, $sub];
+                if (isset($GLOBALS['submenu'][$parent]) && is_array($GLOBALS['submenu'][$parent])) {
+                    foreach ($GLOBALS['submenu'][$parent] as $idx => $item) {
+                        if (isset($item[2]) && $item[2] === $sub) {
+                            unset($GLOBALS['submenu'][$parent][$idx]);
+                        }
+                    }
+                    $GLOBALS['submenu'][$parent] = array_values($GLOBALS['submenu'][$parent]);
+                }
             },
             menuAdder: $dependencies['menuAdder'] ?? function (
                 string $pageTitle,
@@ -188,6 +211,10 @@ final class WpAdminControlTest extends TestCase
                 mixed $callback = null,
                 int|float|null $position = null
             ): string {
+                if (!isset($GLOBALS['submenu'][$parentSlug])) {
+                    $GLOBALS['submenu'][$parentSlug][] = [$parentSlug, $capability, $parentSlug, $parentSlug];
+                }
+                $GLOBALS['submenu'][$parentSlug][] = [$menuTitle, $capability, $menuSlug, $pageTitle];
                 $this->addedSubmenuPages[] = [
                     'parent_slug' => $parentSlug,
                     'page_title' => $pageTitle,
@@ -215,10 +242,18 @@ final class WpAdminControlTest extends TestCase
             ): void {
                 $this->removedMetaBoxes[] = [$id, $screen, $context];
             },
+            actionRemover: $dependencies['actionRemover'] ?? function (
+                string $tag,
+                callable|string $cb,
+                int $priority = 10
+            ): void {
+                $this->removedActions[] = [$tag, $cb, $priority];
+            },
             currentScreenGetter: $dependencies['currentScreenGetter'] ?? fn (): ?object => $this->currentScreen,
             headerEchoer: $dependencies['headerEchoer'] ?? function (string $html): void {
                 $this->echoedHtml .= $html;
-            }
+            },
+            terminator: $dependencies['terminator'] ?? null
         );
     }
 
@@ -618,10 +653,16 @@ final class WpAdminControlTest extends TestCase
         $this->assertFalse($plugin->isUserRestrictedByRule($rule4, $user6));
 
         $rule5 = $rules[4];
+        $this->assertSame('hide', $rule5['action']);
         $this->assertTrue($plugin->isUserRestrictedByRule($rule5, $editor));
         $this->assertFalse($plugin->isUserRestrictedByRule($rule5, $superAdmin));
         $this->assertTrue($plugin->isUserMatchingCosmeticRule($rule5, $superAdmin));
         $this->assertTrue($plugin->isUserMatchingCosmeticRule($rule5, $editor));
+
+        $actionRules = $plugin->parseRules('item1|action:block; item2|action:hide; item3|block');
+        $this->assertSame('block', $actionRules[0]['action']);
+        $this->assertSame('hide', $actionRules[1]['action']);
+        $this->assertSame('block', $actionRules[2]['action']);
     }
 
     public function testRestrictedPagesRemovalAndDirectUrlBlocking(): void
@@ -631,9 +672,9 @@ final class WpAdminControlTest extends TestCase
         $editor = $this->createMockUser(3, 'editor1', ['editor']);
         $superAdmin = $this->createMockUser(1, 'superadmin', ['administrator']);
 
-        $pageConfig = 'plugins.php,options-general.php|role:editor; '
-            . 'acf-field-groups|!role:administrator';
-        putenv('WP_ADMIN_RESTRICTED_PAGES=' . $pageConfig);
+        $pageConfig = 'plugins.php,options-general.php|block:editor; '
+            . 'acf-field-groups|block:!administrator';
+        putenv('WP_ADMIN_SIDEBAR_MENU_CONTROL=' . $pageConfig);
 
         $this->currentUser = $editor;
         $plugin->handleAdminMenu();
@@ -673,6 +714,197 @@ final class WpAdminControlTest extends TestCase
         $this->assertCount(0, $this->dieCalls);
     }
 
+    public function testSidebarMenuControlHideVsBlockDistinction(): void
+    {
+        $plugin = $this->createPluginWithMockFiles();
+
+        $admin = $this->createMockUser(2, 'admin1', ['administrator']);
+        $editor = $this->createMockUser(3, 'editor1', ['editor']);
+        $superAdmin = $this->createMockUser(1, 'superadmin', ['administrator']);
+
+        putenv('WP_ADMIN_SIDEBAR_MENU_CONTROL=elementor-license|hide:administrator|block:editor');
+
+        $this->currentUser = $admin;
+        $plugin->handleAdminMenu();
+        $this->assertContains('elementor-license', $this->removedMenuPages);
+
+        $this->dieCalls = [];
+        $GLOBALS['pagenow'] = 'admin.php';
+        $_GET['page'] = 'elementor-license';
+        $plugin->handleAdminInit();
+        $this->assertCount(0, $this->dieCalls);
+
+        $this->removedMenuPages = [];
+        $this->currentUser = $editor;
+        $plugin->handleAdminMenu();
+        $this->assertContains('elementor-license', $this->removedMenuPages);
+
+        $this->dieCalls = [];
+        $plugin->handleAdminInit();
+        $this->assertCount(1, $this->dieCalls);
+        $this->assertSame(403, $this->dieCalls[0]['title']);
+
+        $this->removedMenuPages = [];
+        $_GET = [];
+        $this->currentUser = $superAdmin;
+        $plugin->handleAdminMenu();
+        $this->assertContains('elementor-license', $this->removedMenuPages);
+
+        $_GET['page'] = 'elementor-license';
+        $this->removedMenuPages = [];
+        $plugin->handleAdminMenu();
+        $this->assertNotContains('elementor-license', $this->removedMenuPages);
+
+        $this->dieCalls = [];
+        $plugin->handleAdminInit();
+        $this->assertCount(0, $this->dieCalls);
+    }
+
+    public function testSidebarMenuControlSubmenuPairsAndHeadCss(): void
+    {
+        $plugin = $this->createPluginWithMockFiles();
+
+        $editor = $this->createMockUser(3, 'editor1', ['editor']);
+        $this->currentUser = $editor;
+
+        $GLOBALS['submenu'] = [
+            'tools.php' => [
+                0 => ['Import', 'import', 'import.php'],
+                1 => ['Export', 'export', 'export.php'],
+                2 => ['Regenerate', 'manage_options', 'rta_generate_thumbnails'],
+                3 => ['License Page', 'manage_options', 'admin.php?page=elementor-license'],
+            ],
+        ];
+
+        $sideControl = 'tools.php:rta_generate_thumbnails|hide:editor; '
+            . 'elementor-license|block:editor';
+        putenv('WP_ADMIN_SIDEBAR_MENU_CONTROL=' . $sideControl);
+
+        $plugin->handleAdminMenu();
+
+        $this->assertContains(['tools.php', 'rta_generate_thumbnails'], $this->removedSubmenuPages);
+        $this->assertContains('elementor-license', $this->removedMenuPages);
+
+        $remainingSubmenuSlugs = array_map(
+            static fn (array $item): mixed => $item[2] ?? null,
+            $GLOBALS['submenu']['tools.php']
+        );
+        $this->assertNotContains('admin.php?page=elementor-license', $remainingSubmenuSlugs);
+
+        $plugin->handleAdminHead();
+        $this->assertStringContainsString('<style id="wp-admin-control-sidebar-menu">', $this->echoedHtml);
+        $this->assertStringContainsString('#adminmenu a[href*="page=rta_generate_thumbnails"]', $this->echoedHtml);
+        $this->assertStringContainsString('li[data-slug="elementor-license"]', $this->echoedHtml);
+    }
+
+    public function testSidebarMenuControlCompactSyntaxAndPrecedence(): void
+    {
+        $plugin = $this->createPluginWithMockFiles();
+
+        $user2 = $this->createMockUser(2, 'user2', ['editor']);
+        $user3 = $this->createMockUser(3, 'user3', ['author']);
+        $user5 = $this->createMockUser(5, 'user5', ['contributor']);
+
+        $sideControl = 'tools.php|hide:2,author|block:3,editor; '
+            . 'edit.php?post_type=feedback|block:!5';
+        putenv('WP_ADMIN_SIDEBAR_MENU_CONTROL=' . $sideControl);
+
+        $this->currentUser = $user2;
+        $plugin->handleAdminMenu();
+        $this->assertContains('tools.php', $this->removedMenuPages);
+        $this->assertContains('edit.php?post_type=feedback', $this->removedMenuPages);
+
+        $this->dieCalls = [];
+        $GLOBALS['pagenow'] = 'tools.php';
+        $_GET = [];
+        $_SERVER['QUERY_STRING'] = '';
+        $plugin->handleAdminInit();
+        $this->assertCount(1, $this->dieCalls);
+
+        $this->removedMenuPages = [];
+        $this->dieCalls = [];
+        $this->currentUser = $user5;
+        $GLOBALS['pagenow'] = 'edit.php';
+        $_GET = ['post_type' => 'feedback'];
+        $_SERVER['QUERY_STRING'] = 'post_type=feedback';
+        $plugin->handleAdminInit();
+        $this->assertCount(0, $this->dieCalls);
+    }
+
+    public function testSidebarMenuControlFirstSubmenuPromotion(): void
+    {
+        $plugin = $this->createPluginWithMockFiles();
+        $admin = $this->createMockUser(2, 'admin1', ['administrator']);
+        $this->currentUser = $admin;
+
+        $GLOBALS['menu'] = [
+            58 => ['Elementor', 'manage_options', 'elementor-home', 'Elementor', 'menu-top', 'hook_elementor', 'icon'],
+        ];
+        $GLOBALS['submenu'] = [
+            'elementor-home' => [
+                0 => ['Home', 'manage_options', 'elementor-home'],
+                1 => ['Settings', 'manage_options', 'elementor'],
+                2 => ['Tools', 'manage_options', 'elementor-tools'],
+            ],
+        ];
+
+        putenv('WP_ADMIN_SIDEBAR_MENU_CONTROL=elementor-home|hide:administrator');
+        $plugin->handleAdminMenu();
+
+        $this->assertNotContains('elementor-home', $this->removedMenuPages);
+        $this->assertSame('elementor-home', $GLOBALS['menu'][58][2] ?? null);
+
+        $remainingSubSlugs = array_map(
+            static fn (array $item): mixed => $item[2] ?? null,
+            $GLOBALS['submenu']['elementor-home']
+        );
+        $this->assertNotContains('elementor-home', $remainingSubSlugs);
+        $this->assertContains('elementor', $remainingSubSlugs);
+        $this->assertContains('elementor-tools', $remainingSubSlugs);
+    }
+
+    public function testSidebarMenuControlPhysicalScriptDirectAccessHidden(): void
+    {
+        $plugin = $this->createPluginWithMockFiles();
+        $admin = $this->createMockUser(2, 'admin1', ['administrator']);
+        $this->currentUser = $admin;
+
+        $GLOBALS['menu'] = [
+            5 => ['Posts', 'edit_posts', 'edit.php', 'Posts', 'menu-top', 'hook_posts', 'icon'],
+        ];
+        $GLOBALS['submenu'] = [
+            'edit.php' => [
+                0 => ['All Posts', 'edit_posts', 'edit.php'],
+                1 => ['Add Post', 'edit_posts', 'post-new.php'],
+                2 => ['Categories', 'manage_categories', 'edit-tags.php?taxonomy=category'],
+                3 => ['Tags', 'manage_categories', 'edit-tags.php?taxonomy=post_tag'],
+            ],
+        ];
+
+        putenv('WP_ADMIN_SIDEBAR_MENU_CONTROL=edit-tags.php?taxonomy=post_tag');
+        $GLOBALS['pagenow'] = 'edit-tags.php';
+        $_GET = ['taxonomy' => 'post_tag'];
+
+        $plugin->handleAdminMenu();
+
+        $remainingSubSlugs = array_map(
+            static fn (array $item): mixed => $item[2] ?? null,
+            $GLOBALS['submenu']['edit.php']
+        );
+        $this->assertNotContains('edit-tags.php?taxonomy=post_tag', $remainingSubSlugs);
+        $this->assertContains('edit-tags.php?taxonomy=category', $remainingSubSlugs);
+
+        $plugin->handleAdminHead();
+        $this->assertStringContainsString(
+            '#adminmenu a[href*="edit-tags.php?taxonomy=post_tag"]',
+            $this->echoedHtml
+        );
+        $this->assertStringContainsString(
+            '#adminmenu li:has(> a[href*="edit-tags.php?taxonomy=post_tag"])',
+            $this->echoedHtml
+        );
+    }
+
     public function testMenuOrdering(): void
     {
         $plugin = $this->createPluginWithMockFiles();
@@ -696,7 +928,6 @@ final class WpAdminControlTest extends TestCase
 
         putenv('WP_ADMIN_CUSTOM_MENU_1_TITLE=Support Desk');
         putenv('WP_ADMIN_CUSTOM_MENU_1_ICON=dashicons-sos');
-        putenv('WP_ADMIN_CUSTOM_MENU_1_POSITION=80');
         putenv('WP_ADMIN_CUSTOM_MENU_1_TARGET=all');
         putenv('WP_ADMIN_CUSTOM_MENU_1_ITEMS=Documentation|https://example.com/docs; Guide|/guide');
 
@@ -706,11 +937,159 @@ final class WpAdminControlTest extends TestCase
         $this->assertCount(1, $this->addedMenuPages);
         $this->assertSame('Support Desk', $this->addedMenuPages[0]['page_title']);
         $this->assertSame('dashicons-sos', $this->addedMenuPages[0]['icon_url']);
-        $this->assertSame(80.0, $this->addedMenuPages[0]['position']);
+        $this->assertNull($this->addedMenuPages[0]['position']);
 
         $this->assertCount(2, $this->addedSubmenuPages);
         $this->assertSame('Documentation', $this->addedSubmenuPages[0]['page_title']);
         $this->assertSame('Guide', $this->addedSubmenuPages[1]['page_title']);
+        $this->assertSame('custom-menu-1', $this->addedSubmenuPages[0]['parent_slug']);
+        $this->assertSame('custom-menu-1', $this->addedSubmenuPages[1]['parent_slug']);
+    }
+
+    public function testCustomMenuExplicitIdAndActiveStateHighlighting(): void
+    {
+        $plugin = $this->createPluginWithMockFiles();
+
+        putenv('WP_ADMIN_CUSTOM_MENU_1_ID=custom-cache');
+        putenv('WP_ADMIN_CUSTOM_MENU_1_TITLE=Cache Control');
+        putenv('WP_ADMIN_CUSTOM_MENU_1_ICON=dashicons-admin-tools');
+        putenv('WP_ADMIN_CUSTOM_MENU_1_ITEMS=Tools|admin.php?page=elementor-tools; WP Hide|admin.php?page=wp-hide');
+
+        $this->currentUser = $this->createMockUser(2, 'admin2', ['administrator']);
+        $plugin->handleAdminMenu();
+
+        $this->assertCount(1, $this->addedMenuPages);
+        $this->assertSame('custom-cache', $this->addedMenuPages[0]['menu_slug']);
+        $this->assertSame('Cache Control', $this->addedMenuPages[0]['page_title']);
+
+        $this->assertCount(2, $this->addedSubmenuPages);
+        $this->assertSame('custom-cache', $this->addedSubmenuPages[0]['parent_slug']);
+        $this->assertSame('Tools', $this->addedSubmenuPages[0]['page_title']);
+        $this->assertSame('admin.php?page=elementor-tools', $this->addedSubmenuPages[0]['menu_slug']);
+
+        $this->assertCount(2, $GLOBALS['submenu']['custom-cache']);
+        $this->assertSame('Tools', $GLOBALS['submenu']['custom-cache'][0][0]);
+        $this->assertSame('admin.php?page=elementor-tools', $GLOBALS['submenu']['custom-cache'][0][2]);
+        $this->assertSame('WP Hide', $GLOBALS['submenu']['custom-cache'][1][0]);
+        $this->assertSame('admin.php?page=wp-hide', $GLOBALS['submenu']['custom-cache'][1][2]);
+        $this->assertSame('custom-cache', $GLOBALS['_parent_pages']['elementor-tools']);
+        $this->assertSame('custom-cache', $GLOBALS['_parent_pages']['wp-hide']);
+
+        $GLOBALS['pagenow'] = 'admin.php';
+        $GLOBALS['plugin_page'] = 'elementor-tools';
+        $_GET['page'] = 'elementor-tools';
+
+        $highlightedParent = $plugin->filterParentFile('elementor');
+        $this->assertSame('custom-cache', $highlightedParent);
+        $this->assertSame('custom-cache', $GLOBALS['parent_file']);
+
+        $highlightedSubmenu = $plugin->filterSubmenuFile(
+            'admin.php?page=elementor-tools',
+            'custom-cache'
+        );
+        $this->assertSame('admin.php?page=elementor-tools', $highlightedSubmenu);
+        $this->assertSame('admin.php?page=elementor-tools', $GLOBALS['submenu_file']);
+
+        $GLOBALS['pagenow'] = 'admin.php';
+        $GLOBALS['plugin_page'] = 'unrelated-plugin';
+        $_GET['page'] = 'unrelated-plugin';
+
+        $unchangedParent = $plugin->filterParentFile('unrelated-parent');
+        $this->assertSame('unrelated-parent', $unchangedParent);
+
+        $unchangedSubmenu = $plugin->filterSubmenuFile('unrelated-sub', 'unrelated-parent');
+        $this->assertSame('unrelated-sub', $unchangedSubmenu);
+    }
+
+    public function testIsCurrentUrlMatchingEdgeCases(): void
+    {
+        $plugin = $this->createPluginWithMockFiles();
+
+        $_GET = [];
+
+        $this->assertFalse($plugin->isCurrentUrlMatching('', 'admin.php', null));
+
+        $this->assertTrue(
+            $plugin->isCurrentUrlMatching('admin.php?page=elementor-tools', 'admin.php', 'elementor-tools')
+        );
+        $this->assertTrue($plugin->isCurrentUrlMatching('elementor-tools', 'admin.php', 'elementor-tools'));
+
+        $_GET['post_type'] = 'page';
+        $this->assertTrue($plugin->isCurrentUrlMatching('edit.php?post_type=page', 'edit.php', null));
+        $this->assertFalse($plugin->isCurrentUrlMatching('edit.php?post_type=post', 'edit.php', null));
+
+        $_GET = ['page' => 'wp-hide-pro', 'option' => 'data-collection'];
+        $this->assertTrue(
+            $plugin->isCurrentUrlMatching(
+                'admin.php?page=wp-hide-pro&option=data-collection',
+                'admin.php',
+                'wp-hide-pro'
+            )
+        );
+        $this->assertFalse(
+            $plugin->isCurrentUrlMatching(
+                'admin.php?page=wp-hide-pro&option=other-option',
+                'admin.php',
+                'wp-hide-pro'
+            )
+        );
+
+        $_GET = [];
+        $this->assertTrue($plugin->isCurrentUrlMatching('upload.php', 'upload.php', null));
+        $this->assertFalse($plugin->isCurrentUrlMatching('upload.php', 'upload.php', 'plugin-screen'));
+
+        $this->assertFalse($plugin->isCurrentUrlMatching('https://example.com/docs', 'admin.php', null));
+    }
+
+    public function testSidebarSeparatorsInsertionAndMenuOrder(): void
+    {
+        $plugin = $this->createPluginWithMockFiles();
+
+        $GLOBALS['menu'] = [
+            2 => ['Dashboard', 'read', 'index.php', '', 'menu-top', 'menu-dashboard'],
+            5 => ['Posts', 'edit_posts', 'edit.php', '', 'menu-top', 'menu-posts'],
+            20 => ['Pages', 'edit_pages', 'edit.php?post_type=page', '', 'menu-top', 'menu-pages'],
+            58 => ['Elementor', 'manage_options', 'elementor-home', '', 'menu-top', 'toplevel_page_elementor-home'],
+        ];
+
+        putenv('WP_ADMIN_SIDEBAR_MENU_SEPARATORS_AFTER=edit.php,toplevel_page_elementor-home,non-existent');
+
+        $this->currentUser = $this->createMockUser(2, 'admin2', ['administrator']);
+        $plugin->handleAdminMenu();
+
+        $this->assertArrayHasKey('5.1', $GLOBALS['menu']);
+        $this->assertSame('separator-custom-1', $GLOBALS['menu']['5.1'][2]);
+        $this->assertSame('wp-menu-separator', $GLOBALS['menu']['5.1'][4]);
+
+        $this->assertArrayHasKey('58.1', $GLOBALS['menu']);
+        $this->assertSame('separator-custom-2', $GLOBALS['menu']['58.1'][2]);
+        $this->assertSame('wp-menu-separator', $GLOBALS['menu']['58.1'][4]);
+
+        $this->assertTrue($plugin->filterCustomMenuOrder(false));
+
+        $orderWithoutCustom = ['index.php', 'edit.php', 'edit.php?post_type=page', 'elementor-home'];
+        $reordered = $plugin->filterMenuOrder($orderWithoutCustom);
+
+        $expectedOrder = [
+            'index.php',
+            'edit.php',
+            'separator-custom-1',
+            'edit.php?post_type=page',
+            'elementor-home',
+            'separator-custom-2',
+        ];
+        $this->assertSame($expectedOrder, array_values($reordered));
+
+        putenv('WP_ADMIN_MENU_ORDER=elementor-home,edit.php,index.php');
+        $reorderedExplicit = $plugin->filterMenuOrder($orderWithoutCustom);
+        $this->assertSame([
+            'elementor-home',
+            'separator-custom-2',
+            'edit.php',
+            'separator-custom-1',
+            'index.php',
+            'edit.php?post_type=page',
+        ], array_values($reorderedExplicit));
     }
 
     public function testAdminBarCleanupAndNewDropdownFiltering(): void
@@ -819,7 +1198,7 @@ final class WpAdminControlTest extends TestCase
     {
         $plugin = $this->createPluginWithMockFiles();
 
-        putenv('WP_ADMIN_DASHBOARD_REMOVE_BOXES=dashboard_recent_comments|all');
+        putenv('WP_ADMIN_DASHBOARD_WIDGETS_REMOVE=dashboard_recent_comments,welcome-panel|all');
         putenv('WP_ADMIN_DASHBOARD_WIDGET_1_TITLE=Platform Guide');
         putenv('WP_ADMIN_DASHBOARD_WIDGET_1_TARGET=all');
         $content = "Support: [Help](https://example.com/help)\n\n"
@@ -831,6 +1210,10 @@ final class WpAdminControlTest extends TestCase
 
         $this->assertCount(3, $this->removedMetaBoxes);
         $this->assertSame('dashboard_recent_comments', $this->removedMetaBoxes[0][0]);
+        $this->assertSame([['welcome_panel', 'wp_welcome_panel', 10]], $this->removedActions);
+
+        $plugin->handleAdminHead();
+        $this->assertStringContainsString('#welcome-panel, label[for="wp_welcome_panel-hide"]', $this->echoedHtml);
 
         $this->assertArrayHasKey('wp_admin_control_widget_1', $this->addedDashboardWidgets);
         $widget = $this->addedDashboardWidgets['wp_admin_control_widget_1'];
@@ -964,6 +1347,10 @@ final class WpAdminControlTest extends TestCase
         $this->assertArrayHasKey('rest_post_query', $filters);
         $this->assertArrayHasKey('custom_menu_order', $filters);
         $this->assertArrayHasKey('menu_order', $filters);
+        $this->assertArrayHasKey('parent_file', $filters);
+        $this->assertArrayHasKey('submenu_file', $filters);
+        $this->assertSame(999, $filters['parent_file']['priority']);
+        $this->assertSame(999, $filters['submenu_file']['priority']);
         $this->assertArrayHasKey('screen_options_show_screen', $filters);
         $this->assertArrayHasKey('hidden_meta_boxes', $filters);
         $this->assertArrayHasKey('hidden_columns', $filters);
@@ -1121,7 +1508,7 @@ final class WpAdminControlTest extends TestCase
         $this->allUsers = [$superAdmin, $normalAdmin];
         $this->currentUser = $normalAdmin;
 
-        putenv('WP_ADMIN_RESTRICTED_PAGES=options-general.php|all');
+        putenv('WP_ADMIN_SIDEBAR_MENU_CONTROL=options-general.php|block');
         $GLOBALS['pagenow'] = 'options.php';
 
         $_POST['option_page'] = 'general';
@@ -1921,7 +2308,9 @@ final class WpAdminControlTest extends TestCase
         $plugin->handleAdminInit();
         $this->assertCount(0, $this->dieCalls);
 
-        putenv('WP_ADMIN_RESTRICTED_PAGES=other.php?foo=bar; tools.php?; tools.php?action=edit&type=special');
+        $sideControl = 'other.php?foo=bar|block; tools.php?|block; '
+            . 'tools.php?action=edit&type=special|block';
+        putenv('WP_ADMIN_SIDEBAR_MENU_CONTROL=' . $sideControl);
         $restrictedPlugin = $this->createPluginWithMockFiles();
 
         $GLOBALS['pagenow'] = 'tools.php';
@@ -1958,7 +2347,10 @@ final class WpAdminControlTest extends TestCase
 
         $addedSlugs = array_column($this->addedMenuPages, 'menu_slug');
         $this->assertNotContains('wp_admin_control_custom_menu_1', $addedSlugs);
-        $this->assertContains('https://example.com', $addedSlugs);
+        $this->assertContains('custom-menu-2', $addedSlugs);
+
+        $addedSubSlugs = array_column($this->addedSubmenuPages, 'menu_slug');
+        $this->assertContains('https://example.com', $addedSubSlugs);
 
         $plugin->handleAdminBarMenu(new stdClass());
 
@@ -2416,8 +2808,8 @@ final class WpAdminControlTest extends TestCase
     {
         $plugin = new WpAdminControl();
 
-        $getPagesRef = new ReflectionMethod(WpAdminControl::class, 'getRestrictedPagesForCurrentUser');
-        $this->assertSame([], $getPagesRef->invoke($plugin));
+        $getSidebarRef = new ReflectionMethod(WpAdminControl::class, 'getSidebarMenuControlForCurrentUser');
+        $this->assertSame(['hide' => [], 'block' => []], $getSidebarRef->invoke($plugin));
 
         $getPostsRef = new ReflectionMethod(WpAdminControl::class, 'getRestrictedPostIdsForCurrentUser');
         $this->assertSame([], $getPostsRef->invoke($plugin));
@@ -2643,5 +3035,388 @@ final class WpAdminControlTest extends TestCase
         $deregisterRef->invoke($plugin, 'test_handle');
 
         $this->assertTrue(function_exists('wp_dequeue_style'));
+    }
+
+    public function testParseRulesExpandedGrammarAndModifiers(): void
+    {
+        $plugin = $this->createPluginWithMockFiles();
+
+        $rules = $plugin->parseRules('menu1|hide:admin||unknown_mod|block:editor; menu2|hide:admin,,!|hide:all');
+        $this->assertCount(4, $rules);
+
+        $nonCompact = $plugin->parseRules('menu3||role:editor,,!admin|user:10,,!20');
+        $this->assertCount(1, $nonCompact);
+        $this->assertSame(['admin'], $nonCompact[0]['invertedRoles']);
+        $this->assertSame(['editor'], $nonCompact[0]['roles']);
+        $this->assertSame([20], $nonCompact[0]['invertedUsers']);
+        $this->assertSame([10], $nonCompact[0]['users']);
+    }
+
+    public function testHandleAdminInitBlockedSubmenuPair(): void
+    {
+        $editor = (object) ['ID' => 3, 'user_login' => 'editor1', 'roles' => ['editor']];
+        $this->currentUser = $editor;
+
+        putenv('WP_ADMIN_SIDEBAR_MENU_CONTROL=tools.php:custom_tool|block:all');
+        $plugin = $this->createPluginWithMockFiles();
+
+        $GLOBALS['pagenow'] = 'custom_tool';
+        $plugin->handleAdminInit();
+
+        $this->assertCount(1, $this->dieCalls);
+        $this->assertSame('Sorry, you are not allowed to access this page.', $this->dieCalls[0]['message']);
+    }
+
+    #[RunInSeparateProcess]
+    #[PreserveGlobalState(false)]
+    public function testHandleAdminInitCustomMenuRedirects(): void
+    {
+        ensure_duplicator_stubs();
+        $this->currentUser = (object) ['ID' => 1, 'user_login' => 'superadmin', 'roles' => ['administrator']];
+        putenv('WP_ADMIN_CUSTOM_MENU_1_TITLE=Custom Menu');
+        putenv('WP_ADMIN_CUSTOM_MENU_1_ITEMS=First|admin.php?page=my-sub');
+
+        $plugin = $this->createPluginWithMockFiles(
+            dependencies: [
+                'terminator' => static function (): never {
+                    throw new \RuntimeException('Request terminated');
+                },
+            ]
+        );
+        $_GET['page'] = 'custom-menu-1';
+
+        try {
+            $plugin->handleAdminInit();
+            $this->fail('The terminator must stop further request handling.');
+        } catch (\RuntimeException $exception) {
+            $this->assertSame('Request terminated', $exception->getMessage());
+        }
+
+        $this->assertSame(
+            'https://example.com/wp-admin/admin.php?page=my-sub',
+            $GLOBALS['test_redirect_location'] ?? null
+        );
+    }
+
+    #[RunInSeparateProcess]
+    #[PreserveGlobalState(false)]
+    public function testBootstrapRegistersProductionTerminator(): void
+    {
+        ensure_wordpress_stubs();
+        $GLOBALS['test_registered_actions'] = [];
+
+        $this->assertTrue(class_exists(WpAdminControl::class));
+        $this->assertArrayHasKey('admin_init', $GLOBALS['test_registered_actions']);
+    }
+
+    public function testProductionCustomMenuRedirectTerminatesProcess(): void
+    {
+        $pluginPath = var_export(
+            dirname(__DIR__) . '/examples/data/wp-content/mu-plugins/wp-admin-control.php.example',
+            true
+        );
+        $script = <<<PHP
+function add_action(string \$hook, callable \$callback): void {
+    \$GLOBALS['wp_admin_control_callbacks'][\$hook] = \$callback;
+}
+function add_filter(string \$hook, callable \$callback): void {
+}
+function is_admin(): bool {
+    return true;
+}
+function is_user_logged_in(): bool {
+    return true;
+}
+function wp_get_current_user(): object {
+    return (object) ['ID' => 1, 'user_login' => 'superadmin', 'roles' => ['administrator']];
+}
+function wp_safe_redirect(string \$target): bool {
+    echo \$target;
+    return true;
+}
+function admin_url(string \$path): string {
+    return 'https://example.com/wp-admin/' . \$path;
+}
+putenv('WP_ADMIN_CUSTOM_MENU_1_TITLE=Custom Menu');
+putenv('WP_ADMIN_CUSTOM_MENU_1_ITEMS=First|admin.php?page=my-sub');
+\$_GET['page'] = 'custom-menu-1';
+require {$pluginPath};
+(\$GLOBALS['wp_admin_control_callbacks']['admin_init'])();
+PHP;
+        $command = sprintf('%s -r %s', escapeshellarg(PHP_BINARY), escapeshellarg($script));
+        $descriptors = [
+            0 => ['pipe', 'r'],
+            1 => ['pipe', 'w'],
+            2 => ['pipe', 'w'],
+        ];
+        $process = proc_open($command, $descriptors, $pipes);
+        $this->assertIsResource($process);
+
+        fclose($pipes[0]);
+        $stdout = (string) stream_get_contents($pipes[1]);
+        $stderr = (string) stream_get_contents($pipes[2]);
+        fclose($pipes[1]);
+        fclose($pipes[2]);
+
+        $this->assertSame(0, proc_close($process));
+        $this->assertSame('', $stderr);
+        $this->assertSame('https://example.com/wp-admin/admin.php?page=my-sub', $stdout);
+    }
+
+    public function testHandleAdminMenuRemainingSubmenuAndInvalidMenuArray(): void
+    {
+        $editor = (object) ['ID' => 2, 'user_login' => 'editor', 'roles' => ['editor']];
+        $this->currentUser = $editor;
+
+        putenv('WP_ADMIN_SIDEBAR_MENU_CONTROL=tools.php');
+        $plugin = $this->createPluginWithMockFiles(
+            dependencies: [
+                'submenuRemover' => function (string $parent, string $sub): void {
+                    $this->removedSubmenuPages[] = [$parent, $sub];
+                },
+            ]
+        );
+
+        $GLOBALS['menu'] = [
+            ['Invalid', 'read'],
+            ['Tools', 'read', 'tools.php'],
+        ];
+        $GLOBALS['submenu'] = [
+            'tools.php' => [],
+            'custom-menu-1' => [
+                ['Custom One', 'read', 'custom-menu-1'],
+            ],
+        ];
+
+        $cachedRef = new \ReflectionProperty(WpAdminControl::class, 'cachedCustomMenus');
+        $cachedRef->setValue($plugin, [
+            [
+                'id' => 'custom-menu-1',
+                'title' => 'Custom One',
+                'icon' => '',
+                'targetRules' => [],
+                'items' => [
+                    'invalid_non_array_item',
+                    ['title' => 'Valid', 'url' => 'sub.php'],
+                ],
+            ],
+        ]);
+
+        $plugin->handleAdminMenu();
+
+        $this->assertContains('tools.php', $this->removedMenuPages);
+        $this->assertCount(1, $GLOBALS['submenu']['custom-menu-1']);
+        $this->assertSame('sub.php', $GLOBALS['submenu']['custom-menu-1'][0][2]);
+    }
+
+    public function testHandleAdminHeadSidebarControlSelectors(): void
+    {
+        $editor = (object) ['ID' => 2, 'user_login' => 'editor', 'roles' => ['editor']];
+        $this->currentUser = $editor;
+
+        putenv('WP_ADMIN_SIDEBAR_MENU_CONTROL=admin.php?page=clean-slug; parent:invalid slug!');
+        $plugin = $this->createPluginWithMockFiles();
+
+        $plugin->handleAdminHead();
+        $this->assertStringContainsString('#adminmenu a[href*="page=clean-slug"]', $this->echoedHtml);
+        $this->assertStringNotContainsString('invalid slug!', $this->echoedHtml);
+    }
+
+    public function testHandleSidebarSeparatorsEdgeCases(): void
+    {
+        $plugin = $this->createPluginWithMockFiles();
+
+        $GLOBALS['menu'] = null;
+        putenv('WP_ADMIN_SIDEBAR_MENU_SEPARATORS_AFTER=tools.php');
+        $plugin->handleSidebarSeparators();
+        $this->assertNull($GLOBALS['menu']);
+
+        putenv('WP_ADMIN_SIDEBAR_MENU_SEPARATORS_AFTER=  ,  ,  ');
+        $GLOBALS['menu'] = [];
+        $plugin->handleSidebarSeparators();
+        $this->assertSame([], $GLOBALS['menu']);
+
+        putenv('WP_ADMIN_SIDEBAR_MENU_SEPARATORS_AFTER=tools.php');
+        $GLOBALS['menu'] = [
+            'invalid_item',
+            100 => ['Tools', 'read', 'tools.php', '', '', 'tools.php'],
+            '100.1' => ['Existing Separator', 'read', 'sep-existing', '', 'wp-menu-separator'],
+        ];
+        $plugin->handleSidebarSeparators();
+        $this->assertArrayHasKey('100.11', $GLOBALS['menu']);
+    }
+
+    public function testShouldHideWelcomePanelReturnsFalseWhenNotTargeted(): void
+    {
+        $editor = (object) ['ID' => 2, 'user_login' => 'editor', 'roles' => ['editor']];
+        putenv('WP_ADMIN_DASHBOARD_WIDGETS_REMOVE=dashboard_quick_press|role:editor');
+        $plugin = $this->createPluginWithMockFiles();
+
+        $this->assertFalse($plugin->shouldHideWelcomePanel($editor));
+    }
+
+    public function testFilterMenuOrderSeparatorSpliceBranches(): void
+    {
+        $plugin = $this->createPluginWithMockFiles();
+
+        putenv('WP_ADMIN_SIDEBAR_MENU_SEPARATORS_AFTER=tools.php');
+        $GLOBALS['menu'] = [
+            10 => ['Tools', 'read', 'tools.php', '', '', 'tools.php'],
+        ];
+        $plugin->handleSidebarSeparators();
+
+        putenv('WP_ADMIN_MENU_ORDER');
+        $order = ['index.php', 'separator-custom-1', 'tools.php'];
+        $reordered = $plugin->filterMenuOrder($order);
+        $this->assertSame(['index.php', 'tools.php', 'separator-custom-1'], $reordered);
+
+        putenv('WP_ADMIN_MENU_ORDER=tools.php,index.php');
+        $order2 = ['index.php', 'separator-custom-1', 'tools.php'];
+        $reordered2 = $plugin->filterMenuOrder($order2);
+        $this->assertSame(['tools.php', 'separator-custom-1', 'index.php'], $reordered2);
+    }
+
+    public function testFilterParentFileAndSubmenuFileBranches(): void
+    {
+        $superAdmin = (object) ['ID' => 1, 'user_login' => 'superadmin', 'roles' => ['administrator']];
+        $editor = (object) ['ID' => 2, 'user_login' => 'editor', 'roles' => ['editor']];
+        $this->usersData[1] = $superAdmin;
+        $this->usersData[2] = $editor;
+        $this->allUsers = [$superAdmin, $editor];
+
+        $plugin = $this->createPluginWithMockFiles();
+        $this->assertSame('original.php', $plugin->filterParentFile('original.php'));
+        $this->assertSame('original_sub.php', $plugin->filterSubmenuFile('original_sub.php'));
+
+        putenv('WP_ADMIN_CUSTOM_MENU_1_TITLE=Restricted Menu');
+        putenv('WP_ADMIN_CUSTOM_MENU_1_TARGET=user:999');
+        putenv('WP_ADMIN_CUSTOM_MENU_1_ITEMS=Sub|sub.php');
+
+        $this->currentUser = $editor;
+        $pluginRestricted = $this->createPluginWithMockFiles();
+        $this->assertSame('orig.php', $pluginRestricted->filterParentFile('orig.php'));
+        $this->assertSame('orig_sub.php', $pluginRestricted->filterSubmenuFile('orig_sub.php'));
+
+        putenv('WP_ADMIN_CUSTOM_MENU_1_TARGET=all');
+        putenv('WP_ADMIN_CUSTOM_MENU_1_ITEMS=Item One|https://example.com');
+        $pluginWithItems = $this->createPluginWithMockFiles();
+
+        $cachedRef = new \ReflectionProperty(WpAdminControl::class, 'cachedCustomMenus');
+        $cachedRef->setValue($pluginWithItems, [
+            [
+                'id' => 'custom-1',
+                'title' => 'Custom',
+                'icon' => '',
+                'targetRules' => [],
+                'items' => ['invalid_sub_item', ['title' => 'Valid', 'url' => 'admin.php?page=test']],
+            ],
+        ]);
+
+        $GLOBALS['pagenow'] = 'admin.php';
+        $GLOBALS['plugin_page'] = null;
+        $_GET = ['page' => 'test'];
+
+        $this->assertSame('custom-1', $pluginWithItems->filterParentFile('orig.php'));
+        $this->assertSame('admin.php?page=test', $pluginWithItems->filterSubmenuFile('orig_sub.php'));
+    }
+
+    public function testIsCurrentUrlMatchingBranches(): void
+    {
+        $plugin = $this->createPluginWithMockFiles();
+
+        $this->assertFalse($plugin->isCurrentUrlMatching('http://:80', 'index.php', null));
+        $this->assertFalse($plugin->isCurrentUrlMatching('tools.php?page=test', 'options.php', null));
+
+        $_GET = ['tab' => 'general'];
+        $this->assertTrue($plugin->isCurrentUrlMatching('admin.php?page=test&tab=general', 'admin.php', 'test'));
+
+        $_GET = ['page' => 'test'];
+        $this->assertFalse($plugin->isCurrentUrlMatching('admin.php?page=test&tab=two', 'admin.php', 'test'));
+    }
+
+    #[RunInSeparateProcess]
+    #[PreserveGlobalState(false)]
+    public function testHandleAdminInitCustomMenuWpRedirectFallback(): void
+    {
+        $GLOBALS['test_skip_wp_safe_redirect'] = true;
+        ensure_duplicator_stubs();
+        $this->currentUser = (object) ['ID' => 1, 'user_login' => 'superadmin', 'roles' => ['administrator']];
+        putenv('WP_ADMIN_CUSTOM_MENU_1_TITLE=Custom Menu');
+        putenv('WP_ADMIN_CUSTOM_MENU_1_ITEMS=First|https://example.com/target');
+
+        $plugin = $this->createPluginWithMockFiles(
+            dependencies: [
+                'terminator' => static function (): never {
+                    throw new \RuntimeException('Request terminated');
+                },
+            ]
+        );
+        $_GET['page'] = 'custom-menu-1';
+
+        try {
+            $plugin->handleAdminInit();
+            $this->fail('The terminator must stop further request handling.');
+        } catch (\RuntimeException $exception) {
+            $this->assertSame('Request terminated', $exception->getMessage());
+        }
+
+        $this->assertSame('https://example.com/target', $GLOBALS['test_redirect_location'] ?? null);
+    }
+
+    public function testIsUserAllowedCustomMenuAndRegisterParentPage(): void
+    {
+        $superAdmin = (object) ['ID' => 1, 'user_login' => 'superadmin', 'roles' => ['administrator']];
+        $this->usersData[1] = $superAdmin;
+        $this->allUsers = [$superAdmin];
+
+        $plugin = $this->createPluginWithMockFiles();
+
+        $isAllowedRef = new ReflectionMethod(WpAdminControl::class, 'isUserAllowedCustomMenu');
+
+        $menu = [
+            'targetRules' => [[
+                'isAll' => false,
+                'roles' => ['editor'],
+                'invertedRoles' => [],
+                'users' => [],
+                'invertedUsers' => [],
+                'action' => 'hide',
+                'targets' => [],
+            ]],
+        ];
+        $this->assertTrue($isAllowedRef->invoke($plugin, $menu, $superAdmin));
+
+        $this->assertTrue($isAllowedRef->invoke($plugin, ['targetRules' => []], null));
+        $this->assertTrue($isAllowedRef->invoke($plugin, ['targetRules' => ['not_an_array']], null));
+
+        $registerRef = new ReflectionMethod(WpAdminControl::class, 'registerParentPage');
+        $registerRef->invoke($plugin, '', 'parent');
+        $registerRef->invoke($plugin, 'child', '');
+        $this->assertFalse(isset($GLOBALS['_parent_pages']['']));
+    }
+
+    public function testFilterMapMetaCapWithNonStringCap(): void
+    {
+        $plugin = $this->createPluginWithMockFiles();
+
+        $this->assertSame(['custom_cap'], $plugin->filterMapMetaCap(['custom_cap'], '', 1, []));
+        $this->assertSame(['custom_cap'], $plugin->filterMapMetaCap(['custom_cap'], 12345, 1, []));
+    }
+
+    public function testIsCurrentPluginPageRequestBranchesInHandleAdminMenu(): void
+    {
+        $editor = (object) ['ID' => 2, 'user_login' => 'editor', 'roles' => ['editor']];
+        $this->currentUser = $editor;
+
+        putenv('WP_ADMIN_SIDEBAR_MENU_CONTROL=admin.php?page=my-tool; tools.php:query-tool?foo=bar');
+        $plugin = $this->createPluginWithMockFiles();
+
+        $_GET['page'] = 'my-tool';
+        $plugin->handleAdminMenu();
+
+        $_GET['page'] = 'query-tool';
+        $plugin->handleAdminMenu();
+
+        $this->assertTrue(true);
     }
 }

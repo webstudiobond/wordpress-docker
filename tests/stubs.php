@@ -265,10 +265,24 @@ function ensure_duplicator_stubs(): void
         }
     }
 
-    if (!function_exists('wp_safe_redirect')) {
+    if (!function_exists('wp_safe_redirect') && empty($GLOBALS['test_skip_wp_safe_redirect'])) {
         function wp_safe_redirect(string $location): bool
         {
             $GLOBALS['test_redirect_location'] = $location;
+            if (!empty($GLOBALS['test_throw_on_redirect'])) {
+                throw new \RuntimeException('Redirected via safe redirect: ' . $location);
+            }
+            return true;
+        }
+    }
+
+    if (!function_exists('wp_redirect')) {
+        function wp_redirect(string $location): bool
+        {
+            $GLOBALS['test_redirect_location'] = $location;
+            if (!empty($GLOBALS['test_throw_on_redirect'])) {
+                throw new \RuntimeException('Redirected via redirect: ' . $location);
+            }
             return true;
         }
     }
@@ -711,6 +725,14 @@ function ensure_admin_control_stubs(): void
         function remove_submenu_page(string $menuSlug, string $submenuSlug): void
         {
             $GLOBALS['test_removed_submenu_pages'][] = [$menuSlug, $submenuSlug];
+            if (isset($GLOBALS['submenu'][$menuSlug]) && is_array($GLOBALS['submenu'][$menuSlug])) {
+                foreach ($GLOBALS['submenu'][$menuSlug] as $idx => $item) {
+                    if (isset($item[2]) && $item[2] === $submenuSlug) {
+                        unset($GLOBALS['submenu'][$menuSlug][$idx]);
+                    }
+                }
+                $GLOBALS['submenu'][$menuSlug] = array_values($GLOBALS['submenu'][$menuSlug]);
+            }
         }
     }
 
@@ -747,6 +769,10 @@ function ensure_admin_control_stubs(): void
             callable|string|null $callback = null,
             int|float|null $position = null
         ): string {
+            if (!isset($GLOBALS['submenu'][$parentSlug])) {
+                $GLOBALS['submenu'][$parentSlug][] = [$parentSlug, $capability, $parentSlug, $parentSlug];
+            }
+            $GLOBALS['submenu'][$parentSlug][] = [$menuTitle, $capability, $menuSlug, $pageTitle];
             $GLOBALS['test_added_submenu_pages'][] = [
                 'parent_slug' => $parentSlug,
                 'page_title' => $pageTitle,

@@ -19,7 +19,8 @@ declare(strict_types=1);
  *     roles: list<string>,
  *     invertedRoles: list<string>,
  *     users: list<int>,
- *     invertedUsers: list<int>
+ *     invertedUsers: list<int>,
+ *     action: 'hide'|'block'
  * }
  */
 final class WpAdminControl
@@ -70,12 +71,25 @@ final class WpAdminControl
     /**
      * @var list<AdminRule>|null
      */
-    private ?array $cachedRestrictedPageRules = null;
+    private ?array $cachedSidebarMenuControlRules = null;
 
     /**
      * @var list<AdminRule>|null
      */
     private ?array $cachedRestrictedPostRules = null;
+
+    /**
+     * @var array<string, string>
+     */
+    private array $separatorAfterMap = [];
+
+    /**
+     * @var list<array<string, mixed>>|null
+     */
+    private ?array $cachedCustomMenus = null;
+
+    /** @var \Closure(): never */
+    private readonly \Closure $terminator;
 
     /**
      * @param (callable(string): (string|false))|null $envGetter
@@ -103,6 +117,7 @@ final class WpAdminControl
      * @param (callable(string, callable|string, int): void)|null $actionRemover
      * @param (callable(string): void)|null $styleDequeuer
      * @param (callable(string): void)|null $styleDeregisterer
+     * @param (\Closure(): never)|null $terminator
      */
     public function __construct(
         private readonly mixed $envGetter = null,
@@ -129,8 +144,10 @@ final class WpAdminControl
         private readonly ?string $customSaltFile = null,
         private readonly mixed $actionRemover = null,
         private readonly mixed $styleDequeuer = null,
-        private readonly mixed $styleDeregisterer = null
+        private readonly mixed $styleDeregisterer = null,
+        ?\Closure $terminator = null
     ) {
+        $this->terminator = $terminator ?? static function (): never { exit; };
     }
 
     public function registerHooks(): void
@@ -162,6 +179,9 @@ final class WpAdminControl
 
         $this->addFilter('custom_menu_order', [$this, 'filterCustomMenuOrder'], 10, 1);
         $this->addFilter('menu_order', [$this, 'filterMenuOrder'], 10, 1);
+
+        $this->addFilter('parent_file', [$this, 'filterParentFile'], 999, 1);
+        $this->addFilter('submenu_file', [$this, 'filterSubmenuFile'], 999, 2);
 
         $this->addFilter('screen_options_show_screen', [$this, 'filterScreenOptionsShowScreen'], 10, 1);
         $this->addFilter('hidden_meta_boxes', [$this, 'filterHiddenMetaBoxes'], 10, 2);
@@ -287,62 +307,201 @@ final class WpAdminControl
                 continue;
             }
 
+            $targets = array_values(array_unique($targets));
+            $modifierSegments = array_slice($segments, 1);
+            if ($modifierSegments === []) {
+                $parsed[] = [
+                    'targets' => $targets,
+                    'isAll' => true,
+                    'roles' => [],
+                    'invertedRoles' => [],
+                    'users' => [],
+                    'invertedUsers' => [],
+                    'action' => 'hide',
+                ];
+                continue;
+            }
+
+            $hasCompactModifiers = false;
+            foreach ($modifierSegments as $modifier) {
+                $trimmedMod = trim($modifier);
+                if (
+                    (str_starts_with($trimmedMod, 'hide:') && $trimmedMod !== 'hide:')
+                    || (str_starts_with($trimmedMod, 'block:') && $trimmedMod !== 'block:')
+                ) {
+                    $hasCompactModifiers = true;
+                    break;
+                }
+            }
+
+            if ($hasCompactModifiers) {
+                foreach ($modifierSegments as $modifier) {
+                    $trimmedMod = trim($modifier);
+                    if ($trimmedMod === '') {
+                        continue;
+                    }
+
+                    $action = 'hide';
+                    $rawAudience = '';
+                    if (str_starts_with($trimmedMod, 'hide:')) {
+                        $action = 'hide';
+                        $rawAudience = substr($trimmedMod, 5);
+                    } elseif (str_starts_with($trimmedMod, 'block:')) {
+                        $action = 'block';
+                        $rawAudience = substr($trimmedMod, 6);
+                    } else {
+                        continue;
+                    }
+
+                    $roles = [];
+                    $invertedRoles = [];
+                    $users = [];
+                    $invertedUsers = [];
+                    $isAll = false;
+
+                    foreach (explode(',', $rawAudience) as $item) {
+                        $trimmedItem = trim($item);
+                        if ($trimmedItem === '') {
+                            continue;
+                        }
+                        if ($trimmedItem === 'all') {
+                            $isAll = true;
+                            continue;
+                        }
+
+                        $isInverted = str_starts_with($trimmedItem, '!');
+                        $value = $isInverted ? substr($trimmedItem, 1) : $trimmedItem;
+                        $value = trim($value);
+                        if ($value === '') {
+                            continue;
+                        }
+
+                        if (ctype_digit($value)) {
+                            $uid = (int) $value;
+                            if ($uid > 0) {
+                                if ($isInverted) {
+                                    $invertedUsers[] = $uid;
+                                } else {
+                                    $users[] = $uid;
+                                }
+                            }
+                        } else {
+                            $r = strtolower($value);
+                            if ($isInverted) {
+                                $invertedRoles[] = $r;
+                            } else {
+                                $roles[] = $r;
+                            }
+                        }
+                    }
+
+                    $parsed[] = [
+                        'targets' => $targets,
+                        'isAll' => $isAll,
+                        'roles' => array_values(array_unique($roles)),
+                        'invertedRoles' => array_values(array_unique($invertedRoles)),
+                        'users' => array_values(array_unique($users)),
+                        'invertedUsers' => array_values(array_unique($invertedUsers)),
+                        'action' => $action,
+                    ];
+                }
+                continue;
+            }
+
             $isAll = false;
             $roles = [];
             $invertedRoles = [];
             $users = [];
             $invertedUsers = [];
+            $action = 'hide';
+            $hasAudienceModifier = false;
 
-            $modifierSegments = array_slice($segments, 1);
-            if ($modifierSegments === []) {
-                $isAll = true;
-            } else {
-                foreach ($modifierSegments as $modifier) {
-                    $trimmedMod = trim($modifier);
-                    if ($trimmedMod === '' || $trimmedMod === 'all') {
-                        $isAll = true;
-                        continue;
-                    }
+            foreach ($modifierSegments as $modifier) {
+                $trimmedMod = trim($modifier);
+                if ($trimmedMod === '') {
+                    continue;
+                }
 
-                    if (str_starts_with($trimmedMod, 'role:')) {
-                        foreach (explode(',', substr($trimmedMod, 5)) as $role) {
-                            $r = strtolower(trim($role));
-                            if ($r !== '') {
-                                $roles[] = $r;
-                            }
+                if ($trimmedMod === 'all') {
+                    $isAll = true;
+                    $hasAudienceModifier = true;
+                    continue;
+                }
+
+                if ($trimmedMod === 'action:block' || $trimmedMod === 'block') {
+                    $action = 'block';
+                    continue;
+                }
+
+                if ($trimmedMod === 'action:hide' || $trimmedMod === 'hide') {
+                    $action = 'hide';
+                    continue;
+                }
+
+                $hasAudienceModifier = true;
+
+                if (str_starts_with($trimmedMod, 'role:')) {
+                    foreach (explode(',', substr($trimmedMod, 5)) as $role) {
+                        $trimmedRole = trim($role);
+                        if ($trimmedRole === '') {
+                            continue;
                         }
-                    } elseif (str_starts_with($trimmedMod, '!role:')) {
-                        foreach (explode(',', substr($trimmedMod, 6)) as $role) {
-                            $r = strtolower(trim($role));
+                        if (str_starts_with($trimmedRole, '!')) {
+                            $r = strtolower(substr($trimmedRole, 1));
                             if ($r !== '') {
                                 $invertedRoles[] = $r;
                             }
+                        } else {
+                            $roles[] = strtolower($trimmedRole);
                         }
-                    } elseif (str_starts_with($trimmedMod, 'user:')) {
-                        foreach (explode(',', substr($trimmedMod, 5)) as $userIdStr) {
-                            $uid = (int) trim($userIdStr);
+                    }
+                } elseif (str_starts_with($trimmedMod, '!role:')) {
+                    foreach (explode(',', substr($trimmedMod, 6)) as $role) {
+                        $r = strtolower(trim($role));
+                        if ($r !== '') {
+                            $invertedRoles[] = $r;
+                        }
+                    }
+                } elseif (str_starts_with($trimmedMod, 'user:')) {
+                    foreach (explode(',', substr($trimmedMod, 5)) as $userIdStr) {
+                        $trimmedUser = trim($userIdStr);
+                        if ($trimmedUser === '') {
+                            continue;
+                        }
+                        if (str_starts_with($trimmedUser, '!')) {
+                            $uid = (int) substr($trimmedUser, 1);
+                            if ($uid > 0) {
+                                $invertedUsers[] = $uid;
+                            }
+                        } else {
+                            $uid = (int) $trimmedUser;
                             if ($uid > 0) {
                                 $users[] = $uid;
                             }
                         }
-                    } elseif (str_starts_with($trimmedMod, '!user:')) {
-                        foreach (explode(',', substr($trimmedMod, 6)) as $userIdStr) {
-                            $uid = (int) trim($userIdStr);
-                            if ($uid > 0) {
-                                $invertedUsers[] = $uid;
-                            }
+                    }
+                } elseif (str_starts_with($trimmedMod, '!user:')) {
+                    foreach (explode(',', substr($trimmedMod, 6)) as $userIdStr) {
+                        $uid = (int) trim($userIdStr);
+                        if ($uid > 0) {
+                            $invertedUsers[] = $uid;
                         }
                     }
                 }
             }
 
+            if (!$hasAudienceModifier) {
+                $isAll = true;
+            }
+
             $parsed[] = [
-                'targets' => array_values(array_unique($targets)),
+                'targets' => $targets,
                 'isAll' => $isAll,
                 'roles' => array_values(array_unique($roles)),
                 'invertedRoles' => array_values(array_unique($invertedRoles)),
                 'users' => array_values(array_unique($users)),
                 'invertedUsers' => array_values(array_unique($invertedUsers)),
+                'action' => $action,
             ];
         }
 
@@ -510,14 +669,19 @@ final class WpAdminControl
             }
         }
 
-        if ($isCurrentSuperAdmin) {
-            return;
-        }
-
-        $restrictedPages = $this->getRestrictedPagesForCurrentUser();
-        if ($restrictedPages !== []) {
+        $sidebarControl = $this->getSidebarMenuControlForCurrentUser();
+        $blockedPages = $sidebarControl['block'];
+        if (!$isCurrentSuperAdmin && $blockedPages !== []) {
             $lowerPagenow = strtolower($pagenow);
-            $normalizedRestricted = array_map('strtolower', $restrictedPages);
+            $normalizedBlocked = [];
+            foreach ($blockedPages as $bt) {
+                if (str_contains($bt, ':')) {
+                    $childSlug = explode(':', $bt, 2)[1];
+                    $normalizedBlocked[] = strtolower($childSlug);
+                }
+                $normalizedBlocked[] = strtolower($bt);
+            }
+            $normalizedBlocked = array_values(array_unique($normalizedBlocked));
 
             if ($lowerPagenow === 'options.php') {
                 $rawOptionPage = $_POST['option_page'] ?? $_GET['option_page'] ?? '';
@@ -525,29 +689,29 @@ final class WpAdminControl
                 if ($optionPage !== '') {
                     $mappedTarget = 'options-' . $optionPage . '.php';
                     if (
-                        in_array($mappedTarget, $normalizedRestricted, true)
-                        || in_array($optionPage, $normalizedRestricted, true)
+                        in_array($mappedTarget, $normalizedBlocked, true)
+                        || in_array($optionPage, $normalizedBlocked, true)
                     ) {
                         $this->dieForbidden('Sorry, you are not allowed to access this page.');
                         return;
                     }
                 } elseif (
-                    in_array('options.php', $normalizedRestricted, true)
-                    || in_array('options-general.php', $normalizedRestricted, true)
+                    in_array('options.php', $normalizedBlocked, true)
+                    || in_array('options-general.php', $normalizedBlocked, true)
                 ) {
                     $this->dieForbidden('Sorry, you are not allowed to access this page.');
                     return;
                 }
             }
 
-            if (in_array($lowerPagenow, $normalizedRestricted, true)) {
+            if (in_array($lowerPagenow, $normalizedBlocked, true)) {
                 $this->dieForbidden('Sorry, you are not allowed to access this page.');
                 return;
             }
 
             $rawPageQuery = $_GET['page'] ?? '';
             $pageQuery = is_string($rawPageQuery) ? strtolower(trim($rawPageQuery)) : '';
-            if ($pageQuery !== '' && in_array($pageQuery, $normalizedRestricted, true)) {
+            if ($pageQuery !== '' && in_array($pageQuery, $normalizedBlocked, true)) {
                 $this->dieForbidden('Sorry, you are not allowed to access this page.');
                 return;
             }
@@ -563,12 +727,13 @@ final class WpAdminControl
                 $currentQueryParams['page'] = $pageQuery;
             }
 
-            foreach ($restrictedPages as $target) {
-                if (!str_contains($target, '?')) {
+            foreach ($blockedPages as $target) {
+                $checkTarget = str_contains($target, ':') ? explode(':', $target, 2)[1] : $target;
+                if (!str_contains($checkTarget, '?')) {
                     continue;
                 }
 
-                $targetParts = explode('?', $target, 2);
+                $targetParts = explode('?', $checkTarget, 2);
                 $targetPage = strtolower(trim($targetParts[0]));
                 if ($targetPage !== '' && $targetPage !== $lowerPagenow) {
                     continue;
@@ -606,76 +771,194 @@ final class WpAdminControl
                 return;
             }
         }
+
+        $rawPage = $_GET['page'] ?? '';
+        $page = is_string($rawPage) ? trim($rawPage) : '';
+        if ($page !== '') {
+            $customMenus = $this->getCustomMenus();
+            foreach ($customMenus as $customMenu) {
+                $cId = is_string($customMenu['id'] ?? null) ? $customMenu['id'] : '';
+                if ($cId !== '' && $cId === $page) {
+                    $rawItems = is_array($customMenu['items'] ?? null) ? $customMenu['items'] : [];
+                    $firstItem = $rawItems[0] ?? null;
+                    $firstUrl = is_array($firstItem) && is_string($firstItem['url'] ?? null) ? $firstItem['url'] : '';
+                    if ($firstUrl !== '') {
+                        $target = (str_starts_with($firstUrl, 'http://') || str_starts_with($firstUrl, 'https://'))
+                            ? $firstUrl
+                            : (function_exists('admin_url') ? (string) admin_url($firstUrl) : $firstUrl);
+                        if (function_exists('wp_safe_redirect')) {
+                            wp_safe_redirect($target);
+                            $this->terminate();
+                        }
+                        if (function_exists('wp_redirect')) {
+                            wp_redirect($target);
+                            $this->terminate();
+                        }
+                    }
+                }
+            }
+        }
     }
 
     public function handleAdminMenu(): void
     {
         $currentUser = $this->getCurrentUser();
-        $isCurrentSuperAdmin = $this->isSuperAdmin($currentUser);
+        $sidebarControl = $this->getSidebarMenuControlForCurrentUser();
+        $blockedSet = array_flip($sidebarControl['block']);
 
-        if (!$isCurrentSuperAdmin) {
-            $restrictedPages = $this->getRestrictedPagesForCurrentUser();
-            foreach ($restrictedPages as $target) {
-                $this->removeMenuPage($target);
+        $targetsToHide = [];
+        foreach ($sidebarControl['hide'] as $target) {
+            $isBlocked = isset($blockedSet[$target]);
+            if (!$isBlocked && $this->isCurrentPluginPageRequest($target)) {
+                continue;
+            }
+            $targetsToHide[] = $target;
+        }
+
+        if ($targetsToHide !== []) {
+            $explicitSubmenu = [];
+            $genericTargets = [];
+            foreach ($targetsToHide as $t) {
+                if (str_contains($t, ':')) {
+                    $explicitSubmenu[$t] = true;
+                } else {
+                    $genericTargets[$t] = true;
+                }
+            }
+
+            if (isset($GLOBALS['submenu']) && is_array($GLOBALS['submenu'])) {
+                /** @var array<string, array<int|string, mixed>> $initialSubmenu */
+                $initialSubmenu = $GLOBALS['submenu'];
+                foreach ($initialSubmenu as $parentSlug => $subList) {
+                    $parentStr = (string) $parentSlug;
+                    foreach ($subList as $subItem) {
+                        if (is_array($subItem) && isset($subItem[2]) && is_string($subItem[2])) {
+                            $childSlug = $subItem[2];
+                            $pairKey = $parentStr . ':' . $childSlug;
+                            $matchesExplicit = isset($explicitSubmenu[$pairKey]);
+                            $matchesGeneric = isset($genericTargets[$childSlug]);
+                            if (!$matchesGeneric && str_starts_with($childSlug, 'admin.php?page=')) {
+                                $pageParam = substr($childSlug, 15);
+                                $matchesGeneric = isset($genericTargets[$pageParam]);
+                                if (!$matchesExplicit) {
+                                    $matchesExplicit = isset($explicitSubmenu[$parentStr . ':' . $pageParam]);
+                                }
+                            }
+
+                            if ($matchesExplicit || $matchesGeneric) {
+                                $this->removeSubmenuPage($parentStr, $childSlug);
+                            }
+                        }
+                    }
+                }
+            }
+
+            $preservedTopLevelSlugs = [];
+            if (isset($GLOBALS['menu']) && is_array($GLOBALS['menu'])) {
+                /** @var array<int|string, array<int|string, mixed>> $wpMenuList */
+                $wpMenuList = $GLOBALS['menu'];
+                foreach ($wpMenuList as $menuItem) {
+                    if (!isset($menuItem[2]) || !is_string($menuItem[2])) {
+                        continue;
+                    }
+                    $menuSlug = $menuItem[2];
+                    $isTargeted = isset($genericTargets[$menuSlug])
+                        || isset($explicitSubmenu[$menuSlug . ':' . $menuSlug]);
+                    if (!$isTargeted) {
+                        continue;
+                    }
+
+                    $hasRemainingSubmenu = false;
+                    if (isset($GLOBALS['submenu']) && is_array($GLOBALS['submenu'])) {
+                        /** @var array<string, array<int|string, mixed>> $checkSubmenu */
+                        $checkSubmenu = $GLOBALS['submenu'];
+                        if (isset($checkSubmenu[$menuSlug]) && $checkSubmenu[$menuSlug] !== []) {
+                            $hasRemainingSubmenu = true;
+                        }
+                    }
+
+                    if ($hasRemainingSubmenu) {
+                        $preservedTopLevelSlugs[$menuSlug] = true;
+                        continue;
+                    }
+
+                    $this->removeMenuPage($menuSlug);
+                }
+            }
+
+            foreach (array_keys($genericTargets) as $target) {
+                if (!isset($preservedTopLevelSlugs[$target])) {
+                    $this->removeMenuPage($target);
+                }
             }
         }
 
-        for ($index = 1; ; $index++) {
-            $titleRaw = $this->getEnv('WP_ADMIN_CUSTOM_MENU_' . $index . '_TITLE');
-            if ($titleRaw === false || trim($titleRaw) === '') {
-                break;
-            }
-
-            $title = strip_tags(trim($titleRaw));
-            $iconRaw = $this->getEnv('WP_ADMIN_CUSTOM_MENU_' . $index . '_ICON');
-            $icon = ($iconRaw !== false && trim($iconRaw) !== '') ? trim($iconRaw) : 'dashicons-admin-generic';
-
-            $posRaw = $this->getEnv('WP_ADMIN_CUSTOM_MENU_' . $index . '_POSITION');
-            $position = ($posRaw !== false && is_numeric(trim($posRaw))) ? (float) trim($posRaw) : null;
-
-            $targetRaw = $this->getEnv('WP_ADMIN_CUSTOM_MENU_' . $index . '_TARGET');
-            $targetRuleStr = ($targetRaw !== false && trim($targetRaw) !== '') ? 'custom_menu|' . trim($targetRaw) : 'custom_menu|all';
-            $parsedTargetRules = $this->parseRules($targetRuleStr);
-
-            $isAllowed = true;
-            if ($parsedTargetRules !== [] && !$isCurrentSuperAdmin) {
-                $isAllowed = $this->isUserMatchingCosmeticRule($parsedTargetRules[0], $currentUser);
-            }
-
-            if (!$isAllowed) {
+        $customMenus = $this->getCustomMenus();
+        foreach ($customMenus as $menu) {
+            if (!$this->isUserAllowedCustomMenu($menu, $currentUser)) {
                 continue;
             }
 
-            $itemsRaw = $this->getEnv('WP_ADMIN_CUSTOM_MENU_' . $index . '_ITEMS');
-            $items = ($itemsRaw !== false && trim($itemsRaw) !== '') ? explode(';', trim($itemsRaw)) : [];
+            $menuId = is_string($menu['id'] ?? null) ? $menu['id'] : '';
+            $menuTitle = is_string($menu['title'] ?? null) ? $menu['title'] : '';
+            $menuIcon = is_string($menu['icon'] ?? null) ? $menu['icon'] : 'dashicons-admin-generic';
 
-            $parentSlug = 'wp_admin_control_custom_menu_' . $index;
-            $firstUrl = '';
+            $rawItems = is_array($menu['items'] ?? null) ? $menu['items'] : [];
 
-            $subItems = [];
-            foreach ($items as $item) {
-                $trimmedItem = trim($item);
-                if ($trimmedItem === '') {
+            $this->addMenuPage(
+                $menuTitle,
+                $menuTitle,
+                'read',
+                $menuId,
+                '',
+                $menuIcon
+            );
+
+            foreach ($rawItems as $sub) {
+                if (!is_array($sub)) {
                     continue;
                 }
-                $parts = explode('|', $trimmedItem);
-                $subTitle = trim($parts[0]);
-                $subUrl = isset($parts[1]) ? trim($parts[1]) : '';
+                $subTitle = is_string($sub['title'] ?? null) ? $sub['title'] : '';
+                $subUrl = is_string($sub['url'] ?? null) ? $sub['url'] : '';
                 if ($subTitle !== '' && $subUrl !== '') {
-                    if ($firstUrl === '') {
-                        $firstUrl = $subUrl;
+                    $this->addSubmenuPage($menuId, $subTitle, $subTitle, 'read', $subUrl, null);
+
+                    $parsedSub = parse_url($subUrl);
+                    if (is_array($parsedSub) && isset($parsedSub['query'])) {
+                        $parsedSubParams = [];
+                        parse_str($parsedSub['query'], $parsedSubParams);
+                        if (
+                            isset($parsedSubParams['page'])
+                            && is_string($parsedSubParams['page'])
+                            && $parsedSubParams['page'] !== ''
+                        ) {
+                            $this->registerParentPage($parsedSubParams['page'], $menuId);
+                        }
                     }
-                    $subItems[] = ['title' => $subTitle, 'url' => $subUrl];
+                    $this->registerParentPage($subUrl, $menuId);
                 }
             }
 
-            $menuSlug = $firstUrl !== '' ? $firstUrl : $parentSlug;
-            $this->addMenuPage($title, $title, 'read', $menuSlug, '', $icon, $position);
-
-            foreach ($subItems as $sub) {
-                $this->addSubmenuPage($menuSlug, $sub['title'], $sub['title'], 'read', $sub['url'], null);
+            if ($rawItems !== []) {
+                $this->removeSubmenuPage($menuId, $menuId);
+                if (isset($GLOBALS['submenu']) && is_array($GLOBALS['submenu'])) {
+                    $submenu = &$GLOBALS['submenu'];
+                    if (isset($submenu[$menuId]) && is_array($submenu[$menuId])) {
+                        /** @var list<mixed> $subList */
+                        $subList = array_values($submenu[$menuId]);
+                        foreach ($subList as $idx => $subItem) {
+                            if (is_array($subItem) && isset($subItem[2]) && $subItem[2] === $menuId) {
+                                unset($subList[$idx]);
+                                break;
+                            }
+                        }
+                        $submenu[$menuId] = array_values($subList);
+                    }
+                }
             }
         }
+
+        $this->handleSidebarSeparators();
     }
 
     public function handleAdminBarMenu(object $wpAdminBar): void
@@ -764,15 +1047,20 @@ final class WpAdminControl
     public function handleDashboardSetup(): void
     {
         $currentUser = $this->getCurrentUser();
-        $removeBoxesEnv = $this->getEnv('WP_ADMIN_DASHBOARD_REMOVE_BOXES');
-        if ($removeBoxesEnv !== false && trim($removeBoxesEnv) !== '') {
-            $rules = $this->parseRules(trim($removeBoxesEnv));
+        $removeWidgetsEnv = $this->getEnv('WP_ADMIN_DASHBOARD_WIDGETS_REMOVE');
+        if ($removeWidgetsEnv !== false && trim($removeWidgetsEnv) !== '') {
+            $rules = $this->parseRules(trim($removeWidgetsEnv));
             foreach ($rules as $rule) {
                 if ($this->isUserMatchingCosmeticRule($rule, $currentUser)) {
-                    foreach ($rule['targets'] as $boxId) {
-                        $this->removeMetaBox($boxId, 'dashboard', 'normal');
-                        $this->removeMetaBox($boxId, 'dashboard', 'side');
-                        $this->removeMetaBox($boxId, 'dashboard', 'advanced');
+                    foreach ($rule['targets'] as $targetId) {
+                        if ($targetId === 'welcome-panel') {
+                            $this->removeAction('welcome_panel', 'wp_welcome_panel');
+                            continue;
+                        }
+
+                        $this->removeMetaBox($targetId, 'dashboard', 'normal');
+                        $this->removeMetaBox($targetId, 'dashboard', 'side');
+                        $this->removeMetaBox($targetId, 'dashboard', 'advanced');
                     }
                 }
             }
@@ -826,6 +1114,59 @@ final class WpAdminControl
             }
         }
 
+        if ($this->shouldHideWelcomePanel($currentUser)) {
+            $this->echoHtml(
+                '<style id="wp-admin-control-hide-welcome-panel">'
+                . '#welcome-panel, label[for="wp_welcome_panel-hide"] { display: none !important; }'
+                . '</style>'
+            );
+        }
+
+        $sidebarControl = $this->getSidebarMenuControlForCurrentUser();
+        if ($sidebarControl['hide'] !== []) {
+            $selectors = [];
+            foreach ($sidebarControl['hide'] as $target) {
+                $rawSlug = str_contains($target, ':') ? explode(':', $target, 2)[1] : $target;
+                $rawSlug = trim($rawSlug);
+                if ($rawSlug === '' || !preg_match('/^[a-zA-Z0-9_\.\~\&\=\?\/\-]+$/', $rawSlug)) {
+                    continue;
+                }
+
+                if (str_starts_with($rawSlug, 'admin.php?page=')) {
+                    $pageSlug = substr($rawSlug, 15);
+                    if ($pageSlug !== '') {
+                        $selectors[] = sprintf('#adminmenu a[href*="page=%s"]', $pageSlug);
+                        $selectors[] = sprintf('#adminmenu li:has(> a[href*="page=%s"])', $pageSlug);
+                        $selectors[] = sprintf('li[data-slug="%s"]', $pageSlug);
+                        $selectors[] = sprintf('[data-menu-slug="%s"]', $pageSlug);
+                    }
+                    continue;
+                }
+
+                if (str_contains($rawSlug, '.') || str_contains($rawSlug, '?')) {
+                    $selectors[] = sprintf('#adminmenu a[href*="%s"]', $rawSlug);
+                    $selectors[] = sprintf('#adminmenu a[href$="%s"]', $rawSlug);
+                    $selectors[] = sprintf('#adminmenu li:has(> a[href*="%s"])', $rawSlug);
+                    $selectors[] = sprintf('#adminmenu li:has(> a[href$="%s"])', $rawSlug);
+                    continue;
+                }
+
+                $selectors[] = sprintf('#adminmenu a[href*="page=%s"]', $rawSlug);
+                $selectors[] = sprintf('#adminmenu a[href$="%s"]', $rawSlug);
+                $selectors[] = sprintf('#adminmenu li:has(> a[href*="page=%s"])', $rawSlug);
+                $selectors[] = sprintf('#adminmenu li:has(> a[href$="%s"])', $rawSlug);
+                $selectors[] = sprintf('li[data-slug="%s"]', $rawSlug);
+                $selectors[] = sprintf('[data-menu-slug="%s"]', $rawSlug);
+            }
+            if ($selectors !== []) {
+                $uniqueSelectors = array_values(array_unique($selectors));
+                $this->echoHtml(sprintf(
+                    '<style id="wp-admin-control-sidebar-menu">%s { display: none !important; }</style>',
+                    implode(', ', $uniqueSelectors)
+                ));
+            }
+        }
+
         $selectorsEnv = $this->getEnv('WP_ADMIN_HIDE_SELECTORS');
         if ($selectorsEnv !== false && trim($selectorsEnv) !== '') {
             $cleanSelectors = $this->sanitizeCssSelectors(trim($selectorsEnv));
@@ -837,6 +1178,83 @@ final class WpAdminControl
                 $this->echoHtml($styleBlock);
             }
         }
+    }
+
+    public function handleSidebarSeparators(): void
+    {
+        $raw = $this->getEnv('WP_ADMIN_SIDEBAR_MENU_SEPARATORS_AFTER');
+        if ($raw === false || trim($raw) === '') {
+            return;
+        }
+
+        $menu = &$GLOBALS['menu'];
+        if (!is_array($menu)) {
+            return;
+        }
+
+        $targets = [];
+        foreach (explode(',', trim($raw)) as $token) {
+            $t = trim($token);
+            if ($t !== '') {
+                $targets[] = $t;
+            }
+        }
+
+        if ($targets === []) {
+            return;
+        }
+
+        $separatorIndex = 1;
+        foreach ($targets as $target) {
+            $foundPos = null;
+            $matchedSlug = '';
+            foreach ($menu as $pos => $item) {
+                if (!is_array($item)) {
+                    continue;
+                }
+                $rawSlug = $item[2] ?? '';
+                $slug = is_scalar($rawSlug) ? (string) $rawSlug : '';
+                $rawHook = $item[5] ?? '';
+                $hook = is_scalar($rawHook) ? (string) $rawHook : '';
+                if ($slug === $target || $hook === $target) {
+                    $foundPos = $pos;
+                    $matchedSlug = $slug;
+                    break;
+                }
+            }
+
+            if ($foundPos === null || $matchedSlug === '') {
+                continue;
+            }
+
+            $basePos = is_numeric($foundPos) ? (float) $foundPos : 100.0;
+            $newPos = $basePos + 0.1;
+            while (isset($menu[(string) $newPos])) {
+                $newPos += 0.01;
+            }
+
+            $separatorSlug = 'separator-custom-' . $separatorIndex;
+            $menu[(string) $newPos] = ['', 'read', $separatorSlug, '', 'wp-menu-separator'];
+            $this->separatorAfterMap[$matchedSlug] = $separatorSlug;
+            $separatorIndex++;
+        }
+    }
+
+    public function shouldHideWelcomePanel(?object $user): bool
+    {
+        $raw = $this->getEnv('WP_ADMIN_DASHBOARD_WIDGETS_REMOVE');
+        if ($raw === false || trim($raw) === '') {
+            return false;
+        }
+
+        $rules = $this->parseRules(trim($raw));
+        foreach ($rules as $rule) {
+            if (in_array('welcome-panel', $rule['targets'], true) && $this->isUserMatchingCosmeticRule($rule, $user)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     public function isGoogleFontsDisabled(): bool
@@ -1291,6 +1709,11 @@ final class WpAdminControl
             return true;
         }
 
+        $rawSeps = $this->getEnv('WP_ADMIN_SIDEBAR_MENU_SEPARATORS_AFTER');
+        if ($rawSeps !== false && trim($rawSeps) !== '') {
+            return true;
+        }
+
         return (bool) $custom;
     }
 
@@ -1302,6 +1725,21 @@ final class WpAdminControl
     {
         $rawOrder = $this->getEnv('WP_ADMIN_MENU_ORDER');
         if ($rawOrder === false || trim($rawOrder) === '') {
+            if ($this->separatorAfterMap !== []) {
+                $reordered = $menuOrder;
+                foreach ($this->separatorAfterMap as $targetSlug => $sepSlug) {
+                    $targetPos = array_search($targetSlug, $reordered, true);
+                    $sepPos = array_search($sepSlug, $reordered, true);
+                    if ($targetPos !== false) {
+                        if ($sepPos !== false) {
+                            array_splice($reordered, (int) $sepPos, 1);
+                            $targetPos = array_search($targetSlug, $reordered, true);
+                        }
+                        array_splice($reordered, (int) $targetPos + 1, 0, [$sepSlug]);
+                    }
+                }
+                return $reordered;
+            }
             return $menuOrder;
         }
 
@@ -1330,7 +1768,253 @@ final class WpAdminControl
             }
         }
 
+        if ($this->separatorAfterMap !== []) {
+            foreach ($this->separatorAfterMap as $targetSlug => $sepSlug) {
+                $targetPos = array_search($targetSlug, $reordered, true);
+                $sepPos = array_search($sepSlug, $reordered, true);
+                if ($targetPos !== false) {
+                    if ($sepPos !== false) {
+                        array_splice($reordered, (int) $sepPos, 1);
+                        $targetPos = array_search($targetSlug, $reordered, true);
+                    }
+                    array_splice($reordered, (int) $targetPos + 1, 0, [$sepSlug]);
+                }
+            }
+        }
+
         return $reordered;
+    }
+
+    public function filterParentFile(string $parentFile): string
+    {
+        $currentUser = $this->getCurrentUser();
+        $customMenus = $this->getCustomMenus();
+        if ($customMenus === []) {
+            return $parentFile;
+        }
+
+        $pagenow = isset($GLOBALS['pagenow']) && is_string($GLOBALS['pagenow']) ? $GLOBALS['pagenow'] : '';
+        $pluginPage = isset($GLOBALS['plugin_page']) && is_string($GLOBALS['plugin_page'])
+            ? $GLOBALS['plugin_page']
+            : null;
+
+        foreach ($customMenus as $menu) {
+            if (!$this->isUserAllowedCustomMenu($menu, $currentUser)) {
+                continue;
+            }
+
+            $rawItems = is_array($menu['items'] ?? null) ? $menu['items'] : [];
+            foreach ($rawItems as $item) {
+                if (!is_array($item)) {
+                    continue;
+                }
+                $itemUrl = is_string($item['url'] ?? null) ? $item['url'] : '';
+                if ($this->isCurrentUrlMatching($itemUrl, $pagenow, $pluginPage)) {
+                    $menuId = is_string($menu['id'] ?? null) ? $menu['id'] : '';
+                    if ($pluginPage !== null && $pluginPage !== '') {
+                        $this->registerParentPage($pluginPage, $menuId);
+                    }
+                    $this->registerParentPage($itemUrl, $menuId);
+                    $GLOBALS['parent_file'] = $menuId;
+                    return $menuId;
+                }
+            }
+        }
+
+        return $parentFile;
+    }
+
+    public function filterSubmenuFile(?string $submenuFile, string $parentFile = ''): ?string
+    {
+        $currentUser = $this->getCurrentUser();
+        $customMenus = $this->getCustomMenus();
+        if ($customMenus === []) {
+            return $submenuFile;
+        }
+
+        $pagenow = isset($GLOBALS['pagenow']) && is_string($GLOBALS['pagenow']) ? $GLOBALS['pagenow'] : '';
+        $pluginPage = isset($GLOBALS['plugin_page']) && is_string($GLOBALS['plugin_page'])
+            ? $GLOBALS['plugin_page']
+            : null;
+
+        foreach ($customMenus as $menu) {
+            if (!$this->isUserAllowedCustomMenu($menu, $currentUser)) {
+                continue;
+            }
+
+            $menuId = is_string($menu['id'] ?? null) ? $menu['id'] : '';
+            $rawItems = is_array($menu['items'] ?? null) ? $menu['items'] : [];
+            foreach ($rawItems as $item) {
+                if (!is_array($item)) {
+                    continue;
+                }
+                $itemUrl = is_string($item['url'] ?? null) ? $item['url'] : '';
+                if ($this->isCurrentUrlMatching($itemUrl, $pagenow, $pluginPage)) {
+                    $GLOBALS['submenu_file'] = $itemUrl;
+                    return $itemUrl;
+                }
+            }
+        }
+
+        return $submenuFile;
+    }
+
+    public function isCurrentUrlMatching(string $itemUrl, string $pagenow, ?string $pluginPage): bool
+    {
+        $trimmed = trim($itemUrl);
+        if ($trimmed === '') {
+            return false;
+        }
+
+        if ($pluginPage !== null && $pluginPage !== '') {
+            if ($trimmed === $pluginPage || $trimmed === 'admin.php?page=' . $pluginPage) {
+                return true;
+            }
+        }
+
+        $parsed = parse_url($trimmed);
+        if (!is_array($parsed)) {
+            return false;
+        }
+
+        $rawPath = isset($parsed['path']) ? $parsed['path'] : '';
+        $pathBasename = basename($rawPath);
+        $query = isset($parsed['query']) ? $parsed['query'] : '';
+
+        if ($pathBasename !== '' && $pagenow !== '' && $pathBasename === $pagenow && $query === '') {
+            return $pluginPage === null || $pluginPage === '';
+        }
+
+        if ($query !== '') {
+            $parsedParams = [];
+            parse_str($query, $parsedParams);
+            if ($parsedParams !== []) {
+                if ($pathBasename !== '' && $pagenow !== '' && $pathBasename !== $pagenow) {
+                    return false;
+                }
+
+                $currentParams = $_GET;
+                if ($pluginPage !== null && $pluginPage !== '' && !isset($currentParams['page'])) {
+                    $currentParams['page'] = $pluginPage;
+                }
+
+                foreach ($parsedParams as $k => $v) {
+                    $strKey = (string) $k;
+                    $strVal = is_scalar($v) ? (string) $v : '';
+                    if (!isset($currentParams[$strKey]) || !is_scalar($currentParams[$strKey])) {
+                        return false;
+                    }
+                    if ((string) $currentParams[$strKey] !== $strVal) {
+                        return false;
+                    }
+                }
+
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * @return list<array<string, mixed>>
+     */
+    public function getCustomMenus(): array
+    {
+        if ($this->cachedCustomMenus !== null) {
+            return $this->cachedCustomMenus;
+        }
+
+        $menus = [];
+
+        for ($index = 1; ; $index++) {
+            $titleRaw = $this->getEnv('WP_ADMIN_CUSTOM_MENU_' . $index . '_TITLE');
+            if ($titleRaw === false || trim($titleRaw) === '') {
+                break;
+            }
+
+            $title = strip_tags(trim($titleRaw));
+
+            $idRaw = $this->getEnv('WP_ADMIN_CUSTOM_MENU_' . $index . '_ID');
+            $id = ($idRaw !== false && trim($idRaw) !== '')
+                ? trim($idRaw)
+                : 'custom-menu-' . $index;
+
+            $iconRaw = $this->getEnv('WP_ADMIN_CUSTOM_MENU_' . $index . '_ICON');
+            $icon = ($iconRaw !== false && trim($iconRaw) !== '') ? trim($iconRaw) : 'dashicons-admin-generic';
+
+            $targetRaw = $this->getEnv('WP_ADMIN_CUSTOM_MENU_' . $index . '_TARGET');
+            $targetRuleStr = ($targetRaw !== false && trim($targetRaw) !== '')
+                ? 'custom_menu|' . trim($targetRaw)
+                : 'custom_menu|all';
+            $parsedTargetRules = $this->parseRules($targetRuleStr);
+
+            $itemsRaw = $this->getEnv('WP_ADMIN_CUSTOM_MENU_' . $index . '_ITEMS');
+            $rawList = ($itemsRaw !== false && trim($itemsRaw) !== '') ? explode(';', trim($itemsRaw)) : [];
+
+            $items = [];
+            foreach ($rawList as $rawItem) {
+                $trimmedItem = trim($rawItem);
+                if ($trimmedItem === '') {
+                    continue;
+                }
+                $parts = explode('|', $trimmedItem);
+                $subTitle = trim($parts[0]);
+                $subUrl = isset($parts[1]) ? trim($parts[1]) : '';
+                if ($subTitle !== '' && $subUrl !== '') {
+                    $items[] = ['title' => $subTitle, 'url' => $subUrl];
+                }
+            }
+
+            $menus[] = [
+                'id' => $id,
+                'title' => $title,
+                'icon' => $icon,
+                'targetRules' => $parsedTargetRules,
+                'items' => $items,
+            ];
+        }
+
+        $this->cachedCustomMenus = $menus;
+        return $this->cachedCustomMenus;
+    }
+
+    /**
+     * @param array<string, mixed> $menu
+     */
+    private function isUserAllowedCustomMenu(array $menu, ?object $user): bool
+    {
+        if ($this->isSuperAdmin($user)) {
+            return true;
+        }
+
+        $rawRules = is_array($menu['targetRules'] ?? null) ? $menu['targetRules'] : [];
+        if ($rawRules === []) {
+            return true;
+        }
+
+        $firstRule = $rawRules[0] ?? null;
+        if (!is_array($firstRule)) {
+            return true;
+        }
+
+        /** @var AdminRule $firstRule */
+        return $this->isUserMatchingCosmeticRule($firstRule, $user);
+    }
+
+    private function registerParentPage(string $childSlug, string $parentSlug): void
+    {
+        if ($childSlug === '' || $parentSlug === '') {
+            return;
+        }
+
+        if (!isset($GLOBALS['_parent_pages']) || !is_array($GLOBALS['_parent_pages'])) {
+            $GLOBALS['_parent_pages'] = [];
+        }
+
+        /** @var array<string, string> $parentPages */
+        $parentPages = &$GLOBALS['_parent_pages'];
+        $parentPages[$childSlug] = $parentSlug;
     }
 
     public function filterScreenOptionsShowScreen(mixed $show): bool
@@ -1379,8 +2063,12 @@ final class WpAdminControl
      * @param array<int, mixed> $args
      * @return array<int, string>
      */
-    public function filterMapMetaCap(array $caps, string $cap, int $userId, array $args): array
+    public function filterMapMetaCap(array $caps, mixed $cap, int $userId, array $args): array
     {
+        if (!is_string($cap) || $cap === '') {
+            return $caps;
+        }
+
         if (in_array($cap, self::PROTECTED_USER_CAPABILITIES, true)) {
             $targetUserId = isset($args[0]) && is_numeric($args[0]) ? (int) $args[0] : 0;
             if ($targetUserId > 0) {
@@ -1626,33 +2314,89 @@ final class WpAdminControl
         return implode(', ', $clean);
     }
 
-    /**
-     * @return list<string>
-     */
-    private function getRestrictedPagesForCurrentUser(): array
+    private function isCurrentPluginPageRequest(string $target): bool
     {
-        $currentUser = $this->getCurrentUser();
-        if ($currentUser === null || $this->isSuperAdmin($currentUser)) {
-            return [];
+        $rawPage = $_GET['page'] ?? '';
+        if (!is_string($rawPage) || trim($rawPage) === '') {
+            return false;
         }
 
-        if ($this->cachedRestrictedPageRules === null) {
-            $raw = $this->getEnv('WP_ADMIN_RESTRICTED_PAGES');
-            $this->cachedRestrictedPageRules = ($raw !== false && trim($raw) !== '')
+        $currentPage = strtolower(trim($rawPage));
+        $rawTarget = str_contains($target, ':') ? explode(':', $target, 2)[1] : $target;
+        $rawTarget = trim($rawTarget);
+
+        if (str_starts_with($rawTarget, 'admin.php?page=')) {
+            $rawTarget = substr($rawTarget, 15);
+        }
+
+        if (str_contains($rawTarget, '?')) {
+            $rawTarget = explode('?', $rawTarget, 2)[0];
+        }
+
+        $targetSlug = strtolower(trim($rawTarget));
+        return $targetSlug !== '' && $currentPage === $targetSlug;
+    }
+
+    /**
+     * @return array{
+     *     hide: list<string>,
+     *     block: list<string>
+     * }
+     */
+    private function getSidebarMenuControlForCurrentUser(): array
+    {
+        $currentUser = $this->getCurrentUser();
+        if ($currentUser === null) {
+            return ['hide' => [], 'block' => []];
+        }
+
+        if ($this->cachedSidebarMenuControlRules === null) {
+            $raw = $this->getEnv('WP_ADMIN_SIDEBAR_MENU_CONTROL');
+            $this->cachedSidebarMenuControlRules = ($raw !== false && trim($raw) !== '')
                 ? $this->parseRules(trim($raw))
                 : [];
         }
 
-        $targets = [];
-        foreach ($this->cachedRestrictedPageRules as $rule) {
-            if ($this->isUserRestrictedByRule($rule, $currentUser)) {
-                foreach ($rule['targets'] as $t) {
-                    $targets[] = $t;
+        if ($this->cachedSidebarMenuControlRules === []) {
+            return ['hide' => [], 'block' => []];
+        }
+
+        /** @var array<string, 'hide'|'block'> $targetActions */
+        $targetActions = [];
+
+        foreach ($this->cachedSidebarMenuControlRules as $rule) {
+            if ($rule['action'] === 'block') {
+                if (!$this->isUserRestrictedByRule($rule, $currentUser)) {
+                    continue;
+                }
+                foreach ($rule['targets'] as $target) {
+                    $targetActions[$target] = 'block';
+                }
+            } else {
+                if (!$this->isUserMatchingCosmeticRule($rule, $currentUser)) {
+                    continue;
+                }
+                foreach ($rule['targets'] as $target) {
+                    if (!isset($targetActions[$target]) || $targetActions[$target] !== 'block') {
+                        $targetActions[$target] = 'hide';
+                    }
                 }
             }
         }
 
-        return array_values(array_unique($targets));
+        $hideTargets = [];
+        $blockTargets = [];
+        foreach ($targetActions as $target => $action) {
+            $hideTargets[] = $target;
+            if ($action === 'block') {
+                $blockTargets[] = $target;
+            }
+        }
+
+        return [
+            'hide' => array_values(array_unique($hideTargets)),
+            'block' => array_values(array_unique($blockTargets)),
+        ];
     }
 
     /**
@@ -2197,6 +2941,11 @@ final class WpAdminControl
         if (function_exists('wp_deregister_style')) {
             wp_deregister_style($handle);
         }
+    }
+
+    private function terminate(): void
+    {
+        ($this->terminator)();
     }
 }
 

@@ -556,7 +556,7 @@ See [Deployment & Setup — Step 7](#7-mail--push-notifications-go-notifier) for
 * Source: [`examples/data/wp-content/mu-plugins/wp-admin-control.php.example`](examples/data/wp-content/mu-plugins/wp-admin-control.php.example)
 
 * Provides zero-knowledge cloaking and privilege protection for designated Super Administrator accounts using HMAC-SHA512 hashes loaded directly from Docker Secrets (`/run/secrets/wp_super_admins` keyed by `auth_salt`). Super administrators are completely invisible in user management tables, aggregate user counters, REST API endpoints, post author attributions, and frontend author archive queries, and are immune to modification, deletion, role reassignment, or password resets by standard administrators.
-* Enforces declarative, environment-driven Role-Based Access Control (RBAC) to block administrative pages, settings screens, and specific post/page IDs for non-exempt roles or users. Restricted pages are automatically removed from dashboard navigation and denied during form submissions (e.g., `options.php`), while restricted posts are excluded from post listings, count queries, and REST API collections.
+* Enforces declarative, environment-driven access rules for administrative pages and specific post/page IDs. Sidebar rules distinguish cosmetic `hide` (direct access remains allowed) from `block` (matching admin routes are denied server-side); super-administrators are exempt from `block`, while matching `hide` rules can still apply to them. Restricted posts are excluded from applicable post listings, count queries, and REST API collections.
 * Cleanses the administration dashboard interface: removes contextual "Help" tabs and "Screen Options" drawer, filters or reorders Admin Bar (toolbar) items, strips unwanted dashboard meta boxes, registers custom information widgets formatted with secure Micro-Markdown, adds custom Dashicon menu items, customizes admin menu ordering, forces hidden table columns or meta boxes, and safely hides arbitrary UI elements via sanitized CSS selectors.
 
 #### Super Administrator Setup
@@ -579,7 +579,7 @@ sudo chown root:${SITE_USER} /home/${SITE_USER}/secrets/wp_super_admins.txt
 sudo chmod 0440 /home/${SITE_USER}/secrets/wp_super_admins.txt
 ```
 
-*(Super administrators are automatically exempt from all dashboard restrictions, cosmetic rules, and access blocks).*
+*(Super administrators are exempt from functional access blocks. For `WP_ADMIN_SIDEBAR_MENU_CONTROL`, cosmetic `hide` rules still apply when their audience matches, including the default audience.)*
 
 To attach the secret to the WordPress container, uncomment `wp_super_admins` in `/home/${SITE_USER}/docker-compose.yaml`:
 
@@ -605,21 +605,23 @@ docker compose -f /home/${SITE_USER}/docker-compose.yaml up -d
 
 #### Rule Engine Syntax
 
-Restricted pages, posts, and cosmetic interface rules use a unified target-modifier syntax:
+Rule-based settings use a target-modifier syntax:
 `target1,target2|modifier1|modifier2; target3|modifier1`
+
+For `WP_ADMIN_SIDEBAR_MENU_CONTROL`, `hide` is intended to declutter the sidebar by removing unnecessary menu items without blocking the feature or page behind them; direct access remains intact. It is cosmetic, not an access-control mechanism. `block` removes the item and denies matching admin routes server-side. Super-administrators bypass `block`, but are evaluated by `hide` audience rules.
 
 * **Audience modifiers** (evaluated against the currently authenticated user):
   * `role:editor,author` — matches any user holding one of the specified roles.
   * `!role:administrator` — matches any user who does **not** have the specified role.
   * `user:2,5` — matches specific WordPress user IDs.
   * `!user:1` — matches any user except the specified user IDs.
-  * `all` *(default when no modifiers are supplied)* — applies unconditionally to all non-super-admin users.
+  * `all` *(default when no audience is supplied)* — matches all authenticated users. `block` still exempts super-administrators; sidebar `hide` does not.
 
 #### Configuration (`wordpress.env`)
 
-* **Page & Post Restrictions:**
-  * `WP_ADMIN_RESTRICTED_PAGES=` — blocks administrative screens, settings pages, or specific query strings:
-    * `WP_ADMIN_RESTRICTED_PAGES="plugins.php,themes.php|!role:administrator; options.php,options-general.php|role:editor; edit.php?post_type=feedback|user:3"`
+* **Sidebar Menu & Post Restrictions:**
+  * `WP_ADMIN_SIDEBAR_MENU_CONTROL=` — controls sidebar menu/submenu visibility (`hide`) and route access (`block`); submenu targets can use `parent:child`. `hide` alone never denies direct URL access, while `block` removes the item and denies matching admin routes server-side. Super-administrators bypass `block`, but matching `hide` rules still apply:
+    * `WP_ADMIN_SIDEBAR_MENU_CONTROL="plugins.php,themes.php|block:!administrator; elementor-license|hide:administrator|block:editor,author; hello-elementor:hello-elementor-settings; edit.php?post_type=feedback|block:!3"`
   * `WP_ADMIN_RESTRICTED_POSTS=` — blocks editing, deleting, viewing in tables, and querying specific post/page IDs:
     * `WP_ADMIN_RESTRICTED_POSTS="42,108|role:editor; 250|!role:administrator"`
 * **Interface, Privacy & Screen Options:**
@@ -628,27 +630,32 @@ Restricted pages, posts, and cosmetic interface rules use a unified target-modif
 * **Admin Bar (Toolbar) Control:**
   * `WP_ADMIN_BAR_REMOVE_NODES=` — removes top-level Admin Bar node IDs:
     * `WP_ADMIN_BAR_REMOVE_NODES="wp-logo,comments,updates|!role:administrator; customize|role:editor"`
-  * `WP_ADMIN_BAR_NEW_REMOVE=` — removes items from the `+ New` dropdown menu:
-    * `WP_ADMIN_BAR_NEW_REMOVE="user,media|role:author"`
-  * `WP_ADMIN_BAR_NEW_ORDER=` — reorders items under the `+ New` dropdown:
-    * `WP_ADMIN_BAR_NEW_ORDER="page,post,media"`
-* **Dashboard Widgets:**
-  * `WP_ADMIN_DASHBOARD_REMOVE_BOXES=` — removes standard or third-party dashboard meta boxes:
-    * `WP_ADMIN_DASHBOARD_REMOVE_BOXES="dashboard_quick_press,dashboard_primary,dashboard_activity,dashboard_right_now|!role:administrator"`
+  * `WP_ADMIN_BAR_NEW_REMOVE=` — removes items from the `+ New` dropdown menu by their Admin Bar node IDs:
+    * `WP_ADMIN_BAR_NEW_REMOVE="new-user,new-media|role:author"`
+  * `WP_ADMIN_BAR_NEW_ORDER=` — reorders items under the `+ New` dropdown by their Admin Bar node IDs:
+    * `WP_ADMIN_BAR_NEW_ORDER="new-page,new-post,new-media"`
+  * Use the node ID without the `wp-admin-bar-` prefix shown in the rendered HTML. For example, HTML ID `wp-admin-bar-new-user` corresponds to node ID `new-user`.
+* **Dashboard Widgets & Welcome Panel:**
+  * `WP_ADMIN_DASHBOARD_WIDGETS_REMOVE=` — removes standard or third-party dashboard meta boxes as well as the WordPress Welcome panel (`welcome-panel`):
+    * `WP_ADMIN_DASHBOARD_WIDGETS_REMOVE="welcome-panel,dashboard_quick_press,dashboard_primary,dashboard_activity,dashboard_right_now|!role:administrator"`
   * Custom Dashboard Widgets (numbered `1`, `2`, ... until unset):
     * `WP_ADMIN_DASHBOARD_WIDGET_1_TITLE="Editor Guidelines"`
     * `WP_ADMIN_DASHBOARD_WIDGET_1_TARGET="role:editor,author"`
     * `WP_ADMIN_DASHBOARD_WIDGET_1_CONTENT="Welcome! Review the editorial standards:\n- Read our [Publishing Rules](https://example.com/docs)\n- Contact support via [Email](mailto:support@example.org)\n- **Never** publish unreviewed drafts."`
     *(Content supports lightweight Micro-Markdown: `**bold**`, `*italic*`, `[title](https://...)`, `[title](mailto:...)`, and `- list item`. External links are strictly sanitized and forced to `target="_blank" rel="noopener noreferrer"`).*
 * **Custom Navigation Menus & Ordering:**
-  * Custom Top-Level Menus (numbered `1`, `2`, ... until unset):
-    * `WP_ADMIN_CUSTOM_MENU_1_TITLE="Support & Documentation"`
-    * `WP_ADMIN_CUSTOM_MENU_1_ICON="dashicons-sos"`
-    * `WP_ADMIN_CUSTOM_MENU_1_POSITION="30"`
-    * `WP_ADMIN_CUSTOM_MENU_1_TARGET="role:editor"`
-    * `WP_ADMIN_CUSTOM_MENU_1_ITEMS="Documentation|https://example.com/docs; Submit Ticket|https://example.org/tickets"`
-  * `WP_ADMIN_MENU_ORDER=` — custom top-level admin menu order:
-    * `WP_ADMIN_MENU_ORDER="index.php,edit.php,edit.php?post_type=page,upload.php"`
+  * Custom Top-Level Menus (numbered `1`, `2`, ... until unset) let an administrator group convenient links to existing pages under one menu. `WP_ADMIN_CUSTOM_MENU_N_TARGET` selects which audience gets that menu registered (for example, `role:administrator`); designated super-administrators remain permitted. This controls menu visibility only and does not change access checks on linked destinations:
+    * `WP_ADMIN_CUSTOM_MENU_1_ID="custom-cache"` *(optional, defaults to `custom-menu-{N}`)*
+    * `WP_ADMIN_CUSTOM_MENU_1_TITLE="Cache"`
+    * `WP_ADMIN_CUSTOM_MENU_1_ICON="dashicons-admin-tools"`
+    * `WP_ADMIN_CUSTOM_MENU_1_TARGET="role:administrator"`
+    * `WP_ADMIN_CUSTOM_MENU_1_ITEMS="Elementor|admin.php?page=elementor-tools; WP Hide|admin.php?page=wp-hide-pro&option=data-collection"`
+    *(Active menu state highlighting is automatically preserved via `parent_file` and `submenu_file` filters when navigating foreign plugin destinations).*
+  * `WP_ADMIN_SIDEBAR_MENU_SEPARATORS_AFTER=` — visual section separators in sidebar (`<li class="wp-menu-separator">`), inserted immediately following specified menu item slugs:
+    * `WP_ADMIN_SIDEBAR_MENU_SEPARATORS_AFTER="upload.php,hello-elementor"`
+  * `WP_ADMIN_MENU_ORDER=` — custom order for top-level admin menu items, using their menu slugs (not full URLs or submenu page slugs). Items not listed are appended in their existing order:
+    * `WP_ADMIN_MENU_ORDER="index.php,elementor-home,edit.php,edit.php?post_type=page,upload.php"`
+    * For a top-level plugin page at `/admin.php?page=elementor-home` (HTML menu ID `toplevel_page_elementor-home`), use the slug `elementor-home`, not the full URL. Submenu slugs cannot be ordered independently; reorder their top-level parent instead.
 * **Table Columns & Edit Meta Boxes:**
   * `WP_ADMIN_HIDDEN_COLUMNS=` — force-hides table columns on administrative list screens:
     * `WP_ADMIN_HIDDEN_COLUMNS="author,tags,comments|role:editor; date|user:4"`
