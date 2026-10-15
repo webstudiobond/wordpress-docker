@@ -844,4 +844,18 @@ function ensure_admin_control_stubs(): void
             return (bool) ($GLOBALS['test_is_author'] ?? false);
         }
     }
+
+    if (!function_exists('get_user_meta')) {
+        function get_user_meta(int $userId, string $key = '', bool $single = false): mixed
+        {
+            $meta = $GLOBALS['test_user_meta'][$userId] ?? [];
+            if ($key === '') {
+                return $meta;
+            }
+            if ($single) {
+                return $meta[$key] ?? '';
+            }
+            return isset($meta[$key]) ? [$meta[$key]] : [];
+        }
+    }
 }

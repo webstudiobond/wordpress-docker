@@ -38,7 +38,7 @@ jobs:
         run: phpcs
 
       - name: Analyze code with PHPStan (Level 9)
-        run: phpstan analyse --debug --no-progress
+        run: phpstan analyse --memory-limit=256M --debug --no-progress
 
       - name: Run PHPUnit tests
         run: phpunit --no-coverage

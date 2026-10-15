@@ -22,7 +22,7 @@ phpcs-fix:
 	phpcbf
 
 phpstan:
-	phpstan analyse --debug --no-progress
+	phpstan analyse --memory-limit=256M --debug --no-progress
 
 php-test:
 	phpunit --no-coverage
