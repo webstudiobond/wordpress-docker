@@ -398,8 +398,8 @@ secrets:
     file: ./secrets/smtp_mail.txt
   smtp_password:
     file: ./secrets/smtp_password.txt
-#  wp_super_admins:
-#    file: ./secrets/wp_super_admins.txt
+  # wp_super_admins:
+  #   file: ./secrets/wp_super_admins.txt
 
 volumes:
   sockets_mysql:

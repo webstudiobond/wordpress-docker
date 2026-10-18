@@ -140,6 +140,7 @@ services:
       - secure_auth_salt
       - logged_in_salt
       - nonce_salt
+      # - wp_super_admins
     tmpfs:
       - /tmp:mode=1777,noexec,nosuid,nodev,size=64m
       - /run/php:mode=1777,noexec,nosuid,nodev,size=16m
@@ -395,14 +396,16 @@ secrets:
     file: ./secrets/logged_in_salt.txt
   nonce_salt:
     file: ./secrets/nonce_salt.txt
-#  smtp_host:
-#    file: ./secrets/smtp_host.txt
-#  smtp_port:
-#    file: ./secrets/smtp_port.txt
-#  smtp_mail:
-#    file: ./secrets/smtp_mail.txt
-#  smtp_password:
-#    file: ./secrets/smtp_password.txt
+  # smtp_host:
+  #   file: ./secrets/smtp_host.txt
+  # smtp_port:
+  #   file: ./secrets/smtp_port.txt
+  # smtp_mail:
+  #   file: ./secrets/smtp_mail.txt
+  # smtp_password:
+  #   file: ./secrets/smtp_password.txt
+  # wp_super_admins:
+  #   file: ./secrets/wp_super_admins.txt
 
 volumes:
   sockets_mysql:

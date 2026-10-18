@@ -19,12 +19,12 @@ Generate hashes interactively inside the container using `wp-guard` without expo
 
 ```bash
 # Initialize secrets file with the first super administrator:
-docker compose -f /home/${SITE_USER}/docker-compose.yaml exec wordpress \
-  wp-guard superadmin | sudo tee /home/${SITE_USER}/secrets/wp_super_admins.txt > /dev/null
+(HASH=$(docker compose -f /home/${SITE_USER}/docker-compose.yaml exec wordpress wp-guard superadmin) && \
+  printf '%s\n' "${HASH}" | sudo tee /home/${SITE_USER}/secrets/wp_super_admins.txt > /dev/null)
 
 # Append an additional super administrator:
-docker compose -f /home/${SITE_USER}/docker-compose.yaml exec wordpress \
-  wp-guard superadmin | sudo tee -a /home/${SITE_USER}/secrets/wp_super_admins.txt > /dev/null
+(HASH=$(docker compose -f /home/${SITE_USER}/docker-compose.yaml exec wordpress wp-guard superadmin) && \
+  printf '%s\n' "${HASH}" | sudo tee -a /home/${SITE_USER}/secrets/wp_super_admins.txt > /dev/null)
 
 sudo chown root:${SITE_USER} /home/${SITE_USER}/secrets/wp_super_admins.txt
 sudo chmod 0440 /home/${SITE_USER}/secrets/wp_super_admins.txt
