@@ -1038,6 +1038,263 @@ Check the homepage, media assets, and the admin dashboard in your browser. Old `
 ---
 
 <details>
+<summary><strong>Administrator User ID Migration</strong></summary>
+
+## Administrator User ID Migration
+
+On freshly installed WordPress sites, the primary administrative account is assigned `ID = 1` by default. If a migrated site still retains `ID = 1` for its main administrator, automated vulnerability scanners, brute-force bots, and user enumeration tools will systematically probe `ID = 1` and author archive endpoints (`?author=1`). Changing the default administrator ID to a random, non-trivial integer is an effective post-installation or post-migration recommendation.
+
+> WARNING: The target ID '84920' in the examples below is strictly illustrative. NEVER use this exact ID on a production site! Always generate your own unique, random numeric ID (recommended: 5–8 digits).
+
+### Step 0: Create a Temporary Safety Backup
+
+Always create a quick database dump before running migration operations:
+
+```bash
+docker compose -f /home/${SITE_USER}/docker-compose.yaml run --rm wp-cli db export --single-transaction --quick - > /home/${SITE_USER}/mariadb-backup/pre_id_migration.sql
+```
+
+If anything goes wrong, restore the database from this dump:
+
+```bash
+docker compose -f /home/${SITE_USER}/docker-compose.yaml run --rm -T wp-cli db import - < /home/${SITE_USER}/mariadb-backup/pre_id_migration.sql
+```
+
+### Step 1: Automated Discovery & Dry Run
+
+The migration script dynamically inspects `information_schema.COLUMNS` across all tables matching the site's table prefix (`$wpdb->prefix`) for foreign key and user reference columns (`user_id`, `post_author`, `link_owner`, and `users.ID`). It verifies that the source user exists, ensures the target ID is not already taken, and counts matching records across all discovered tables.
+
+Run the inspection in **Dry Run mode** (`DRY_RUN=true`):
+
+```bash
+OLD_ID=1 NEW_ID=84920 DRY_RUN=true \
+docker compose -f /home/${SITE_USER}/docker-compose.yaml run --rm --no-deps \
+  -e OLD_ID -e NEW_ID -e DRY_RUN wp-cli eval '
+global $wpdb;
+
+$old = (int) getenv("OLD_ID");
+$new = (int) getenv("NEW_ID");
+$dry = filter_var(getenv("DRY_RUN") ?: "true", FILTER_VALIDATE_BOOLEAN);
+
+if ($old <= 0 || $new <= 0 || $old === $new) {
+    WP_CLI::error("OLD_ID and NEW_ID must be positive distinct integers.");
+}
+
+$user = $wpdb->get_row($wpdb->prepare(
+    "SELECT ID, user_login FROM `{$wpdb->users}` WHERE ID = %d",
+    $old
+));
+if (!$user) {
+    WP_CLI::error("Source user with ID {$old} does not exist.");
+}
+
+$exists = $wpdb->get_var($wpdb->prepare(
+    "SELECT ID FROM `{$wpdb->users}` WHERE ID = %d",
+    $new
+));
+if ($exists) {
+    WP_CLI::error("Target ID {$new} is already taken by another user!");
+}
+
+$columns = $wpdb->get_results($wpdb->prepare(
+    "SELECT TABLE_NAME, COLUMN_NAME
+     FROM information_schema.COLUMNS
+     WHERE TABLE_SCHEMA = DATABASE()
+       AND TABLE_NAME LIKE %s
+       AND (
+           COLUMN_NAME IN (\"user_id\", \"post_author\", \"link_owner\")
+           OR (TABLE_NAME = %s AND COLUMN_NAME = \"ID\")
+       )
+     ORDER BY TABLE_NAME ASC, COLUMN_NAME ASC",
+    $wpdb->esc_like($wpdb->prefix) . "%",
+    $wpdb->users
+));
+
+if (!$columns) {
+    WP_CLI::error("Failed to discover database tables.");
+}
+
+$records = [];
+$total_records = 0;
+
+foreach ($columns as $col) {
+    $table = $col->TABLE_NAME;
+    $column = $col->COLUMN_NAME;
+    $count = (int) $wpdb->get_var($wpdb->prepare(
+        "SELECT COUNT(*) FROM `{$table}` WHERE `{$column}` = %d",
+        $old
+    ));
+    if ($count > 0) {
+        $records[] = [
+            "table"  => $table,
+            "column" => $column,
+            "count"  => $count,
+        ];
+        $total_records += $count;
+    }
+}
+
+WP_CLI::log(sprintf("User \"%s\" (ID %d -> %d):", $user->user_login, $old, $new));
+foreach ($records as $item) {
+    WP_CLI::log(sprintf("- %s.%s: %d record(s)", $item["table"], $item["column"], $item["count"]));
+}
+WP_CLI::log(sprintf("Total: %d record(s) across %d table(s).", $total_records, count($records)));
+
+if ($dry) {
+    WP_CLI::warning("DRY RUN: No database changes were applied. Set DRY_RUN=false to execute.");
+    return;
+}
+
+$wpdb->query("START TRANSACTION");
+foreach ($records as $item) {
+    $wpdb->update(
+        $item["table"],
+        [$item["column"] => $new],
+        [$item["column"] => $old]
+    );
+}
+$wpdb->query("COMMIT");
+
+wp_cache_flush();
+WP_CLI::success(sprintf(
+    "Successfully migrated User ID from %d to %d (%d records updated). Object cache flushed.",
+    $old,
+    $new,
+    $total_records
+));
+'
+```
+
+Example output:
+
+```text
+User "site_admin" (ID 1 -> 84920):
+- wp_comments.user_id: 1 record(s)
+- wp_posts.post_author: 2 record(s)
+- wp_usermeta.user_id: 28 record(s)
+- wp_users.ID: 1 record(s)
+Total: 32 record(s) across 4 table(s).
+Warning: DRY RUN: No database changes were applied. Set DRY_RUN=false to execute.
+```
+
+### Step 2: Execute Migration
+
+After reviewing the dry-run summary, execute the migration by setting `DRY_RUN=false`:
+
+```bash
+OLD_ID=1 NEW_ID=84920 DRY_RUN=false \
+docker compose -f /home/${SITE_USER}/docker-compose.yaml run --rm --no-deps \
+  -e OLD_ID -e NEW_ID -e DRY_RUN wp-cli eval '
+global $wpdb;
+
+$old = (int) getenv("OLD_ID");
+$new = (int) getenv("NEW_ID");
+$dry = filter_var(getenv("DRY_RUN") ?: "true", FILTER_VALIDATE_BOOLEAN);
+
+if ($old <= 0 || $new <= 0 || $old === $new) {
+    WP_CLI::error("OLD_ID and NEW_ID must be positive distinct integers.");
+}
+
+$user = $wpdb->get_row($wpdb->prepare(
+    "SELECT ID, user_login FROM `{$wpdb->users}` WHERE ID = %d",
+    $old
+));
+if (!$user) {
+    WP_CLI::error("Source user with ID {$old} does not exist.");
+}
+
+$exists = $wpdb->get_var($wpdb->prepare(
+    "SELECT ID FROM `{$wpdb->users}` WHERE ID = %d",
+    $new
+));
+if ($exists) {
+    WP_CLI::error("Target ID {$new} is already taken by another user!");
+}
+
+$columns = $wpdb->get_results($wpdb->prepare(
+    "SELECT TABLE_NAME, COLUMN_NAME
+     FROM information_schema.COLUMNS
+     WHERE TABLE_SCHEMA = DATABASE()
+       AND TABLE_NAME LIKE %s
+       AND (
+           COLUMN_NAME IN (\"user_id\", \"post_author\", \"link_owner\")
+           OR (TABLE_NAME = %s AND COLUMN_NAME = \"ID\")
+       )
+     ORDER BY TABLE_NAME ASC, COLUMN_NAME ASC",
+    $wpdb->esc_like($wpdb->prefix) . "%",
+    $wpdb->users
+));
+
+if (!$columns) {
+    WP_CLI::error("Failed to discover database tables.");
+}
+
+$records = [];
+$total_records = 0;
+
+foreach ($columns as $col) {
+    $table = $col->TABLE_NAME;
+    $column = $col->COLUMN_NAME;
+    $count = (int) $wpdb->get_var($wpdb->prepare(
+        "SELECT COUNT(*) FROM `{$table}` WHERE `{$column}` = %d",
+        $old
+    ));
+    if ($count > 0) {
+        $records[] = [
+            "table"  => $table,
+            "column" => $column,
+            "count"  => $count,
+        ];
+        $total_records += $count;
+    }
+}
+
+WP_CLI::log(sprintf("User \"%s\" (ID %d -> %d):", $user->user_login, $old, $new));
+foreach ($records as $item) {
+    WP_CLI::log(sprintf("- %s.%s: %d record(s)", $item["table"], $item["column"], $item["count"]));
+}
+WP_CLI::log(sprintf("Total: %d record(s) across %d table(s).", $total_records, count($records)));
+
+if ($dry) {
+    WP_CLI::warning("DRY RUN: No database changes were applied. Set DRY_RUN=false to execute.");
+    return;
+}
+
+$wpdb->query("START TRANSACTION");
+foreach ($records as $item) {
+    $wpdb->update(
+        $item["table"],
+        [$item["column"] => $new],
+        [$item["column"] => $old]
+    );
+}
+$wpdb->query("COMMIT");
+
+wp_cache_flush();
+WP_CLI::success(sprintf(
+    "Successfully migrated User ID from %d to %d (%d records updated). Object cache flushed.",
+    $old,
+    $new,
+    $total_records
+));
+'
+```
+
+The migration updates all matching records inside an atomic ACID transaction (`START TRANSACTION ... COMMIT`) and immediately flushes the object cache (`wp_cache_flush()`). Existing sessions for the user will be invalidated, requiring a fresh login with the updated account.
+
+### Step 3: Verify & Cleanup
+
+Log in to the WordPress administration dashboard using the existing credentials to confirm that user administration, profile settings, and content authoring function normally. Once verified, delete the temporary safety database dump:
+
+```bash
+rm -f /home/${SITE_USER}/mariadb-backup/pre_id_migration.sql
+```
+
+</details>
+
+---
+
+<details>
 <summary><strong>Development</strong></summary>
 
 ## Development & Contributing
