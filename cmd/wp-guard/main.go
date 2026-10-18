@@ -9,6 +9,8 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"strconv"
+	"strings"
 	"syscall"
 
 	"github.com/webstudiobond/wp-guard/internal/manifest"
@@ -41,6 +43,16 @@ var (
 	manifestSbsLoaderPath = defaultSbsLoaderPath
 	manifestOutputPath    = defaultManifestPath
 )
+
+func defaultComputeSuperadminHash(idStr, loginStr, salt string) (string, error) {
+	hash, err := superadmin.ComputeHash(idStr, loginStr, salt)
+	if err != nil {
+		return "", fmt.Errorf("failed computing hash: %w", err)
+	}
+	return hash, nil
+}
+
+var computeSuperadminHash = defaultComputeSuperadminHash
 
 func getEnvOrDefault(envKey, defaultVal string) string {
 	if val, ok := os.LookupEnv(envKey); ok && val != "" {
@@ -104,6 +116,43 @@ func runManifestCommand(ctx context.Context, args []string, stdout, stderr io.Wr
 	return 0
 }
 
+func scanLineOrCR(data []byte, atEOF bool) (advance int, token []byte, err error) {
+	if atEOF && len(data) == 0 {
+		return 0, nil, nil
+	}
+	for i, b := range data {
+		if b == '\r' {
+			if i+1 < len(data) {
+				if data[i+1] == '\n' {
+					return i + 2, data[:i], nil
+				}
+				return i + 1, data[:i], nil
+			}
+			if atEOF {
+				return i + 1, data[:i], nil
+			}
+			return 0, nil, nil
+		}
+		if b == '\n' {
+			return i + 1, data[:i], nil
+		}
+	}
+	if atEOF {
+		return len(data), data, nil
+	}
+	return 0, nil, nil
+}
+
+func readLine(scanner *bufio.Scanner) (string, error) {
+	if !scanner.Scan() {
+		if err := scanner.Err(); err != nil {
+			return "", fmt.Errorf("reading input: %w", err)
+		}
+		return "", io.EOF
+	}
+	return scanner.Text(), nil
+}
+
 func runSuperadminCommand(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	subArgs := args
 	if len(args) > 0 && args[0] == "hash" {
@@ -119,20 +168,46 @@ func runSuperadminCommand(ctx context.Context, args []string, stdin io.Reader, s
 		return 2
 	}
 
-	reader := bufio.NewReader(stdin)
+	scanner := bufio.NewScanner(stdin)
+	scanner.Split(scanLineOrCR)
 
-	printMsg(stderr, "Enter superadmin User ID: ")
-	idStr, err := reader.ReadString('\n')
-	if err != nil && idStr == "" {
-		printMsg(stderr, "[wp-guard] failed reading user ID: %v\n", err)
-		return 1
+	var idStr string
+	for {
+		printMsg(stderr, "Enter superadmin User ID: ")
+		line, err := readLine(scanner)
+		if err != nil {
+			printMsg(stderr, "[wp-guard] failed reading user ID: %v\n", err)
+			return 1
+		}
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			printMsg(stderr, "[wp-guard] user ID must not be empty\n")
+			continue
+		}
+		parsedID, parseErr := strconv.ParseUint(trimmed, 10, 64)
+		if parseErr != nil || parsedID == 0 {
+			printMsg(stderr, "[wp-guard] user ID must be a positive integer\n")
+			continue
+		}
+		idStr = trimmed
+		break
 	}
 
-	printMsg(stderr, "Enter superadmin User Login: ")
-	loginStr, err := reader.ReadString('\n')
-	if err != nil && loginStr == "" {
-		printMsg(stderr, "[wp-guard] failed reading user login: %v\n", err)
-		return 1
+	var loginStr string
+	for {
+		printMsg(stderr, "Enter superadmin User Login: ")
+		line, err := readLine(scanner)
+		if err != nil {
+			printMsg(stderr, "[wp-guard] failed reading user login: %v\n", err)
+			return 1
+		}
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			printMsg(stderr, "[wp-guard] user login must not be empty\n")
+			continue
+		}
+		loginStr = trimmed
+		break
 	}
 
 	activeSalt, err := superadmin.ReadSaltFromFile(ctx, *saltFile)
@@ -141,13 +216,14 @@ func runSuperadminCommand(ctx context.Context, args []string, stdin io.Reader, s
 		return 1
 	}
 
-	hash, err := superadmin.ComputeHash(idStr, loginStr, activeSalt)
+	hash, err := computeSuperadminHash(idStr, loginStr, activeSalt)
 	if err != nil {
 		printMsg(stderr, "[wp-guard] %v\n", err)
 		return 1
 	}
 
 	printLine(stdout, hash)
+	printMsg(stderr, "[wp-guard] Superadmin hash successfully generated.\n")
 	return 0
 }
 

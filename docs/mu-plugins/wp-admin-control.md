@@ -99,6 +99,27 @@ docker compose -f /home/${SITE_USER}/docker-compose.yaml run --rm --no-deps wp-c
   Inserts visual menu separators (`<li class="wp-menu-separator">`) immediately after specified menu item slugs.
   Example: `WP_ADMIN_SIDEBAR_MENU_SEPARATORS_AFTER='upload.php,edit.php?post_type=page'`
 
+## User Row Actions & Route Pruning
+
+* `WP_ADMIN_USER_ACTIONS_CONTROL=`
+  Controls user list table action links (`user_row_actions` on `users.php`) using declarative `hide` or `block` directives.
+  *Note:* Rules can be split across arbitrary topical variables matching `WP_ADMIN_USER_ACTIONS_CONTROL_*` (e.g. `WP_ADMIN_USER_ACTIONS_CONTROL_SECURITY`, `WP_ADMIN_USER_ACTIONS_CONTROL_1`). All matching variables are automatically discovered, merged, and evaluated.
+
+### Action Behaviors
+
+| Action Key / Slug | `hide` Behavior | `block` Behavior |
+| :--- | :--- | :--- |
+| `view` | Strips `view` link from `user_row_actions` | Strips `view` link from `user_row_actions` |
+| `edit` / `user-edit.php` | Strips `edit` link from table row | Strips `edit` link + revokes `edit_users` / `edit_user` in `map_meta_cap` + blocks `user-edit.php` (404/403) |
+| `delete` / `users.php?action=delete` | Strips `delete` link from table row | Strips `delete` link + revokes `delete_users` / `delete_user` in `map_meta_cap` + strips bulk delete |
+| `wfls` / `admin.php?page=WFLS` | Strips `wfls` link from table row | Strips `wfls` link + blocks route `admin.php?page=WFLS` (403 Forbidden) |
+| Arbitrary plugin action | Strips matching key or href from `$actions` | Strips matching action + blocks corresponding admin route if matching `admin.php?page=...` |
+
+### Automatic Route Synergy
+
+If an admin route is already blocked via `WP_ADMIN_SIDEBAR_MENU_CONTROL_*` (for example, `admin.php?page=WFLS|block:!superadmins`):
+* Any action in `user_row_actions` whose array key matches the blocked target/slug or whose `href` contains the blocked URL/slug is automatically pruned without requiring duplicate configuration in `WP_ADMIN_USER_ACTIONS_CONTROL`.
+
 ## Top-Bar (Toolbar) & Custom Menus
 
 * `WP_ADMIN_TOPBAR_CUSTOM_MENU_{N}_*`

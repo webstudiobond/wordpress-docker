@@ -102,6 +102,7 @@ final class Plugin
      * @param (callable(int, string, bool): mixed)|null $userMetaGetter
      * @param (callable(): void)|null $terminator
      * @param (callable(): bool)|null $userLoggedInChecker
+     * @param (callable(): array<string, string>)|null $allEnvGetter
      */
     public function __construct(
         private readonly mixed $envGetter = null,
@@ -140,6 +141,7 @@ final class Plugin
         private readonly mixed $userMetaGetter = null,
         private readonly mixed $terminator = null,
         private readonly mixed $userLoggedInChecker = null,
+        private readonly mixed $allEnvGetter = null,
     ) {
         $this->ruleMatcher = new RuleMatcher(
             customSuperAdminFile: $this->customSuperAdminFile,
@@ -253,6 +255,7 @@ final class Plugin
             htmlEchoer: function (string $html): void {
                 $this->echoHtml($html);
             },
+            allEnvGetter: $this->allEnvGetter !== null ? fn(): array => ($this->allEnvGetter)() : null,
         );
 
         $this->topbarControl = new TopbarControl(
@@ -303,6 +306,10 @@ final class Plugin
                 : null,
             statusHeaderSender: null,
             nocacheHeadersSender: null,
+            userActionsControlGetter: fn(): array => $this->getUserActionsControlForCurrentUser(),
+            dieForbiddenHandler: function (string $message): void {
+                $this->dieForbidden($message);
+            },
         );
 
         $this->contentAccessControl = new ContentAccessControl(
@@ -776,6 +783,132 @@ final class Plugin
     }
 
     /**
+     * @return array{
+     *     hide: list<string>,
+     *     block: list<string>
+     * }
+     */
+    public function getUserActionsControlForCurrentUser(?object $user = null): array
+    {
+        $currentUser = $user ?? $this->getCurrentUser();
+        if ($currentUser === null) {
+            return ['hide' => [], 'block' => []];
+        }
+
+        $rawParts = $this->getUserActionsControlRawParts();
+        if ($rawParts === []) {
+            return ['hide' => [], 'block' => []];
+        }
+
+        $combined = \implode('; ', $rawParts);
+        $rules = $this->parseRules($combined);
+        if ($rules === []) {
+            return ['hide' => [], 'block' => []];
+        }
+
+        /** @var array<string, 'hide'|'block'> $targetActions */
+        $targetActions = [];
+
+        foreach ($rules as $rule) {
+            if ($rule['action'] === 'block') {
+                if (!$this->isUserRestrictedByRule($rule, $currentUser)) {
+                    continue;
+                }
+                foreach ($rule['targets'] as $target) {
+                    $targetActions[$target] = 'block';
+                }
+            } else {
+                if (!$this->isUserMatchingCosmeticRule($rule, $currentUser)) {
+                    continue;
+                }
+                foreach ($rule['targets'] as $target) {
+                    if (!isset($targetActions[$target]) || $targetActions[$target] !== 'block') {
+                        $targetActions[$target] = 'hide';
+                    }
+                }
+            }
+        }
+
+        $hideTargets = [];
+        $blockTargets = [];
+        foreach ($targetActions as $target => $action) {
+            $hideTargets[] = $target;
+            if ($action === 'block') {
+                $blockTargets[] = $target;
+            }
+        }
+
+        return [
+            'hide' => \array_values(\array_unique($hideTargets)),
+            'block' => \array_values(\array_unique($blockTargets)),
+        ];
+    }
+
+    /**
+     * @return list<string>
+     */
+    protected function getUserActionsControlRawParts(): array
+    {
+        $rawParts = [];
+        $rawMain = $this->getEnv('WP_ADMIN_USER_ACTIONS_CONTROL');
+        $allEnv = $this->getAllEnv();
+
+        if ($rawMain === false && isset($allEnv['WP_ADMIN_USER_ACTIONS_CONTROL'])) {
+            $rawMain = (string) $allEnv['WP_ADMIN_USER_ACTIONS_CONTROL'];
+        }
+
+        if ($rawMain !== false) {
+            $trimmedMain = \trim($rawMain);
+            if ($trimmedMain !== '') {
+                $rawParts[] = $trimmedMain;
+            }
+        }
+
+        if ($allEnv !== []) {
+            $sharded = [];
+            foreach ($allEnv as $key => $val) {
+                $keyStr = (string) $key;
+                if (\str_starts_with($keyStr, 'WP_ADMIN_USER_ACTIONS_CONTROL_')) {
+                    $trimmed = \trim((string) $val);
+                    if ($trimmed !== '') {
+                        $sharded[$keyStr] = $trimmed;
+                    }
+                }
+            }
+
+            if ($sharded !== []) {
+                \ksort($sharded);
+                foreach ($sharded as $val) {
+                    $rawParts[] = $val;
+                }
+            }
+        }
+
+        return $rawParts;
+    }
+
+    /**
+     * @return array<string, string>
+     */
+    private function getAllEnv(): array
+    {
+        if (\is_callable($this->allEnvGetter)) {
+            return ($this->allEnvGetter)();
+        }
+
+        return \getenv();
+    }
+
+    protected function getEnv(string $name): string|false
+    {
+        if (\is_callable($this->envGetter)) {
+            return ($this->envGetter)($name);
+        }
+
+        return \getenv($name);
+    }
+
+    /**
      * @return list<string>
      */
     public function getProfileFieldsToRemoveForUser(?object $user = null): array
@@ -840,7 +973,11 @@ final class Plugin
         }
 
         if (\function_exists('wp_die')) {
-            \wp_die($message, '403 Forbidden', ['response' => 403]);
+            \wp_die(
+                \function_exists('__') ? (string) \__($message) : $message,
+                '403 Forbidden',
+                ['response' => 403]
+            );
         }
     }
 

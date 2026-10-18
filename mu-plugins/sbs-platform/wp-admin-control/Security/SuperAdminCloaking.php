@@ -49,6 +49,8 @@ final class SuperAdminCloaking
      * @param (callable(): int)|null $queriedObjectIdGetter
      * @param (callable(int): void)|null $statusHeaderSender
      * @param (callable(): void)|null $nocacheHeadersSender
+     * @param (callable(): array{hide: list<string>, block: list<string>})|null $userActionsControlGetter
+     * @param (callable(string): void)|null $dieForbiddenHandler
      */
     public function __construct(
         private readonly mixed $superAdminChecker = null,
@@ -67,6 +69,8 @@ final class SuperAdminCloaking
         private readonly mixed $queriedObjectIdGetter = null,
         private readonly mixed $statusHeaderSender = null,
         private readonly mixed $nocacheHeadersSender = null,
+        private readonly mixed $userActionsControlGetter = null,
+        private readonly mixed $dieForbiddenHandler = null,
     ) {
     }
 
@@ -135,8 +139,66 @@ final class SuperAdminCloaking
         return [];
     }
 
+    /**
+     * @return array{
+     *     hide: list<string>,
+     *     block: list<string>
+     * }
+     */
+    public function getUserActionsControlForCurrentUser(): array
+    {
+        if (\is_callable($this->userActionsControlGetter)) {
+            return ($this->userActionsControlGetter)();
+        }
+
+        return ['hide' => [], 'block' => []];
+    }
+
+    public function isUserActionBlocked(string $target): bool
+    {
+        if ($this->isSuperAdmin($this->getCurrentUser())) {
+            return false;
+        }
+
+        $normalizedTarget = \strtolower(\trim($target));
+        if ($normalizedTarget === '') {
+            return false;
+        }
+
+        $blocked = $this->getUserActionsControlForCurrentUser()['block'];
+        foreach ($blocked as $item) {
+            $itemNormalized = \strtolower(\trim($item));
+            if ($itemNormalized === $normalizedTarget) {
+                return true;
+            }
+            if (\str_starts_with($itemNormalized, 'admin.php?page=')) {
+                $slug = \substr($itemNormalized, 15);
+                if ($slug !== '' && $slug === $normalizedTarget) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    public function isEditBlocked(): bool
+    {
+        if ($this->isSuperAdmin($this->getCurrentUser())) {
+            return false;
+        }
+
+        return $this->isUserActionBlocked('edit')
+            || $this->isUserActionBlocked('user-edit.php')
+            || $this->isTargetBlocked('user-edit.php');
+    }
+
     public function isTargetBlocked(string $target): bool
     {
+        if ($this->isSuperAdmin($this->getCurrentUser())) {
+            return false;
+        }
+
         $normalizedTarget = \strtolower(\trim($target));
         if ($normalizedTarget === '') {
             return false;
@@ -162,6 +224,14 @@ final class SuperAdminCloaking
 
     public function isDeleteBlocked(): bool
     {
+        if ($this->isSuperAdmin($this->getCurrentUser())) {
+            return false;
+        }
+
+        if ($this->isUserActionBlocked('delete') || $this->isUserActionBlocked('users.php?action=delete')) {
+            return true;
+        }
+
         $blocked = $this->getBlockedTargetsForCurrentUser();
         foreach ($blocked as $target) {
             $t = \strtolower(\trim($target));
@@ -178,6 +248,22 @@ final class SuperAdminCloaking
         }
 
         return false;
+    }
+
+    public function dieForbidden(string $message = 'Sorry, you are not allowed to access this page.'): void
+    {
+        if (\is_callable($this->dieForbiddenHandler)) {
+            ($this->dieForbiddenHandler)($message);
+            return;
+        }
+
+        if (\function_exists('wp_die')) {
+            \wp_die(
+                \function_exists('__') ? (string) \__($message) : $message,
+                '403 Forbidden',
+                ['response' => 403]
+            );
+        }
     }
 
     public function filterPreGetUsers(object $query): void
@@ -365,11 +451,9 @@ final class SuperAdminCloaking
     public function filterUserRowActions(array $actions, mixed $user): array
     {
         $currentUser = $this->getCurrentUser();
-        if ($this->isSuperAdmin($currentUser)) {
-            return $actions;
-        }
+        $isCurrentSuperAdmin = $this->isSuperAdmin($currentUser);
 
-        if (\is_object($user) && $this->isSuperAdmin($user)) {
+        if (\is_object($user) && $this->isSuperAdmin($user) && !$isCurrentSuperAdmin) {
             return [];
         }
 
@@ -379,19 +463,142 @@ final class SuperAdminCloaking
         }
         $currentUserId = (int) ($currentUser->ID ?? 0);
 
-        if ($this->isDeleteBlocked()) {
-            unset($actions['delete']);
+        $blockedSidebarTargets = $isCurrentSuperAdmin ? [] : $this->getBlockedTargetsForCurrentUser();
+        $userActions = $this->getUserActionsControlForCurrentUser();
+        $hideActions = $userActions['hide'];
+
+        $filtered = [];
+        foreach ($actions as $key => $html) {
+            $keyStr = (string) $key;
+            if ($this->isActionPruned($keyStr, $html, $userId, $currentUserId, $hideActions, $blockedSidebarTargets)) {
+                continue;
+            }
+            $filtered[$key] = $html;
         }
 
-        if ($userId > 0 && $userId !== $currentUserId && $this->isTargetBlocked('user-edit.php')) {
-            unset($actions['edit']);
+        return $filtered;
+    }
+
+    /**
+     * @param list<string> $hideActions
+     * @param list<string> $blockedSidebarTargets
+     */
+    private function isActionPruned(
+        string $actionKey,
+        string $actionHtml,
+        int $userId,
+        int $currentUserId,
+        array $hideActions,
+        array $blockedSidebarTargets
+    ): bool {
+        $lowerKey = \strtolower(\trim($actionKey));
+        $lowerHref = '';
+        if ($actionHtml !== '' && \preg_match('/\bhref=["\']([^"\']+)["\']/i', $actionHtml, $matches)) {
+            $lowerHref = \strtolower(\trim(\html_entity_decode($matches[1], ENT_QUOTES | ENT_HTML5, 'UTF-8')));
         }
 
-        if ($userId > 0 && $userId === $currentUserId && $this->isTargetBlocked('profile.php')) {
-            unset($actions['edit']);
+        if ($lowerKey === 'delete' && $this->isDeleteBlocked()) {
+            return true;
         }
 
-        return $actions;
+        if ($lowerKey === 'edit') {
+            if (($userId === 0 || $userId !== $currentUserId) && $this->isEditBlocked()) {
+                return true;
+            }
+            if (
+                $userId > 0
+                && $userId === $currentUserId
+                && (
+                    $this->isUserActionBlocked('edit')
+                    || $this->isUserActionBlocked('profile.php')
+                    || $this->isTargetBlocked('profile.php')
+                )
+            ) {
+                return true;
+            }
+        }
+
+        foreach ($hideActions as $target) {
+            if ($this->doesTargetMatchAction($target, $lowerKey, $lowerHref, $userId, $currentUserId)) {
+                return true;
+            }
+        }
+
+        foreach ($blockedSidebarTargets as $target) {
+            if ($this->doesTargetMatchAction($target, $lowerKey, $lowerHref, $userId, $currentUserId)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function doesTargetMatchAction(
+        string $target,
+        string $lowerKey,
+        string $lowerHref,
+        int $userId,
+        int $currentUserId
+    ): bool {
+        $normalizedTarget = \strtolower(\trim($target));
+        if ($normalizedTarget === '') {
+            return false;
+        }
+
+        if ($normalizedTarget === $lowerKey) {
+            return true;
+        }
+
+        if ($normalizedTarget === 'user-edit.php') {
+            if ($userId === 0 || $userId !== $currentUserId) {
+                return $lowerKey === 'edit' || ($lowerHref !== '' && \str_contains($lowerHref, 'user-edit.php'));
+            }
+            return false;
+        }
+
+        if ($normalizedTarget === 'profile.php') {
+            if ($userId > 0 && $userId === $currentUserId) {
+                return $lowerKey === 'edit' || ($lowerHref !== '' && \str_contains($lowerHref, 'profile.php'));
+            }
+            return false;
+        }
+
+        if ($normalizedTarget === 'users.php?action=delete' || $normalizedTarget === 'delete') {
+            return $lowerKey === 'delete' || ($lowerHref !== '' && \str_contains($lowerHref, 'action=delete'));
+        }
+
+        $checkTarget = (\str_contains($normalizedTarget, ':') && !\str_starts_with($normalizedTarget, 'http'))
+            ? \explode(':', $normalizedTarget, 2)[1]
+            : $normalizedTarget;
+
+        if ($checkTarget === $lowerKey) {
+            return true;
+        }
+
+        if (\str_starts_with($checkTarget, 'admin.php?page=')) {
+            $slug = \substr($checkTarget, 15);
+            if ($slug !== '' && $lowerKey === $slug) {
+                return true;
+            }
+            if (
+                $lowerHref !== ''
+                && (
+                    \str_contains($lowerHref, $checkTarget)
+                    || ($slug !== '' && \str_contains($lowerHref, 'page=' . $slug))
+                )
+            ) {
+                return true;
+            }
+            return false;
+        }
+
+        if (!\str_contains($checkTarget, '.') && !\str_contains($checkTarget, '?')) {
+            if ($lowerHref !== '' && \str_contains($lowerHref, 'page=' . $checkTarget)) {
+                return true;
+            }
+        }
+
+        return $lowerHref !== '' && \str_contains($lowerHref, $checkTarget);
     }
 
     public function filterManageUsersCustomColumn(string $output, string $columnName, int $userId): string
@@ -576,7 +783,7 @@ final class SuperAdminCloaking
         }
 
         if ($cap === 'edit_users') {
-            if ($this->isTargetBlocked('user-edit.php')) {
+            if ($this->isEditBlocked()) {
                 return ['do_not_allow'];
             }
         }
@@ -584,10 +791,18 @@ final class SuperAdminCloaking
         if ($cap === 'edit_user') {
             $targetUserId = isset($args[0]) && \is_numeric($args[0]) ? (int) $args[0] : 0;
             $currentUserId = (int) ($currentUser->ID ?? 0);
-            if ($targetUserId > 0 && $targetUserId !== $currentUserId && $this->isTargetBlocked('user-edit.php')) {
+            if ($targetUserId > 0 && $targetUserId !== $currentUserId && $this->isEditBlocked()) {
                 return ['do_not_allow'];
             }
-            if ($targetUserId > 0 && $targetUserId === $currentUserId && $this->isTargetBlocked('profile.php')) {
+            if (
+                $targetUserId > 0
+                && $targetUserId === $currentUserId
+                && (
+                    $this->isTargetBlocked('profile.php')
+                    || $this->isUserActionBlocked('edit')
+                    || $this->isUserActionBlocked('profile.php')
+                )
+            ) {
                 return ['do_not_allow'];
             }
         }
@@ -612,16 +827,17 @@ final class SuperAdminCloaking
 
     public function enforceUserActionProtection(string $pagenow): void
     {
-        if ($pagenow !== 'users.php' && $pagenow !== 'user-edit.php') {
-            return;
-        }
-
         $currentUser = $this->getCurrentUser();
         if ($this->isSuperAdmin($currentUser)) {
             return;
         }
 
         if ($pagenow === 'user-edit.php') {
+            if ($this->isEditBlocked()) {
+                $this->dieForbidden();
+                return;
+            }
+
             $rawTargetId = $_REQUEST['user_id']
                 ?? $_REQUEST['user']
                 ?? $_GET['user_id']
@@ -636,6 +852,23 @@ final class SuperAdminCloaking
                     return;
                 }
             }
+            return;
+        }
+
+        if ($pagenow === 'admin.php') {
+            $rawPage = $_POST['page'] ?? $_GET['page'] ?? '';
+            if (\is_string($rawPage) && \trim($rawPage) !== '') {
+                $currentPage = \strtolower(\trim($rawPage));
+                if ($this->isUserActionBlocked($currentPage)) {
+                    $this->dieForbidden();
+                    return;
+                }
+            }
+            return;
+        }
+
+        if ($pagenow !== 'users.php') {
+            return;
         }
 
         $rawAction = $_REQUEST['action'] ?? '';
@@ -643,6 +876,11 @@ final class SuperAdminCloaking
         if ($action === '' || $action === '-1') {
             $rawAction2 = $_REQUEST['action2'] ?? '';
             $action = \is_string($rawAction2) ? \strtolower(\trim($rawAction2)) : '';
+        }
+
+        if ($this->isDeleteBlocked() && ($action === 'delete' || $action === 'dodelete')) {
+            $this->dieForbidden();
+            return;
         }
 
         if ($action !== '' && $action !== '-1') {

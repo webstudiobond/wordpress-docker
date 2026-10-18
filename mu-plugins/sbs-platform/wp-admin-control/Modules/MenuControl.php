@@ -1130,7 +1130,11 @@ final class MenuControl
         }
 
         if (\function_exists('wp_die')) {
-            \wp_die($message, '403 Forbidden', ['response' => 403]);
+            \wp_die(
+                \function_exists('__') ? (string) \__($message) : $message,
+                '403 Forbidden',
+                ['response' => 403]
+            );
         }
     }
 

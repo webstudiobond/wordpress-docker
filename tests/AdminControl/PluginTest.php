@@ -712,4 +712,211 @@ final class PluginTest extends TestCase
         $this->assertInstanceOf(\stdClass::class, $result);
         $this->assertSame('safe15@example.org', $result->user_email);
     }
+
+    public function testGetUserActionsControlForCurrentUser(): void
+    {
+        $plugin = new Plugin(
+            currentUserGetter: static fn(): ?object => null,
+        );
+        $this->assertSame(['hide' => [], 'block' => []], $plugin->getUserActionsControlForCurrentUser(null));
+
+        $editor = (object) [
+            'ID' => 20,
+            'user_login' => 'editor_actions',
+            'roles' => ['editor'],
+        ];
+
+        $emptyPlugin = new Plugin(
+            envGetter: static fn(string $name): string|false => false,
+            currentUserGetter: static fn(): object => $editor,
+        );
+        $this->assertSame(['hide' => [], 'block' => []], $emptyPlugin->getUserActionsControlForCurrentUser());
+
+        $env = [
+            'WP_ADMIN_USER_ACTIONS_CONTROL' =>
+                'view|hide:all; edit,delete|block:role:editor; custom|hide:role:administrator',
+        ];
+        $activePlugin = new Plugin(
+            envGetter: static fn(string $name): string|false => $env[$name] ?? false,
+            currentUserGetter: static fn(): object => $editor,
+        );
+
+        $resultEditor = $activePlugin->getUserActionsControlForCurrentUser();
+        $this->assertSame(['view', 'edit', 'delete'], $resultEditor['hide']);
+        $this->assertSame(['edit', 'delete'], $resultEditor['block']);
+
+        $admin = (object) [
+            'ID' => 21,
+            'user_login' => 'admin_actions',
+            'roles' => ['administrator'],
+        ];
+        $resultAdmin = $activePlugin->getUserActionsControlForCurrentUser($admin);
+        $this->assertSame(['view', 'custom'], $resultAdmin['hide']);
+        $this->assertSame([], $resultAdmin['block']);
+
+        $spacesPlugin = new Plugin(
+            envGetter: static fn(string $name): string|false => '   ',
+            currentUserGetter: static fn(): object => $editor,
+        );
+        $this->assertSame(['hide' => [], 'block' => []], $spacesPlugin->getUserActionsControlForCurrentUser());
+
+        $emptyRulesPlugin = new Plugin(
+            envGetter: static fn(string $name): string|false => '; ;',
+            currentUserGetter: static fn(): object => $editor,
+        );
+        $this->assertSame(['hide' => [], 'block' => []], $emptyRulesPlugin->getUserActionsControlForCurrentUser());
+    }
+
+    public function testGetUserActionsControlWithShardedEnvVariables(): void
+    {
+        $user = (object) [
+            'ID' => 22,
+            'user_login' => 'shard_user',
+            'roles' => ['editor'],
+        ];
+
+        \putenv('WP_ADMIN_USER_ACTIONS_CONTROL=');
+        \putenv('WP_ADMIN_USER_ACTIONS_CONTROL_2=stats|hide:all');
+        \putenv('WP_ADMIN_USER_ACTIONS_CONTROL_1=wfls|block:all');
+        \putenv('WP_ADMIN_USER_ACTIONS_CONTROL_EMPTY=   ');
+
+        try {
+            $plugin = new Plugin(
+                currentUserGetter: static fn(): object => $user,
+            );
+
+            $result = $plugin->getUserActionsControlForCurrentUser();
+            $this->assertContains('wfls', $result['hide']);
+            $this->assertContains('stats', $result['hide']);
+            $this->assertSame(['wfls'], $result['block']);
+
+            $envGetterFallbackPlugin = new Plugin(
+                envGetter: static fn(string $name): string|false => false,
+                currentUserGetter: static fn(): object => $user,
+            );
+            \putenv('WP_ADMIN_USER_ACTIONS_CONTROL=view|hide:all');
+            $fallbackResult = $envGetterFallbackPlugin->getUserActionsControlForCurrentUser();
+            $this->assertContains('view', $fallbackResult['hide']);
+        } finally {
+            \putenv('WP_ADMIN_USER_ACTIONS_CONTROL');
+            \putenv('WP_ADMIN_USER_ACTIONS_CONTROL_2');
+            \putenv('WP_ADMIN_USER_ACTIONS_CONTROL_1');
+            \putenv('WP_ADMIN_USER_ACTIONS_CONTROL_EMPTY');
+        }
+    }
+
+    public function testFilterUserRowActionsIntegration(): void
+    {
+        $editor = (object) [
+            'ID' => 23,
+            'user_login' => 'editor_row',
+            'roles' => ['editor'],
+        ];
+        $otherUser = (object) [
+            'ID' => 24,
+            'user_login' => 'other_row',
+        ];
+
+        $env = [
+            'WP_ADMIN_USER_ACTIONS_CONTROL' => 'view|hide:all; edit|block:role:editor',
+        ];
+        $plugin = new Plugin(
+            envGetter: static fn(string $name): string|false => $env[$name] ?? false,
+            currentUserGetter: static fn(): object => $editor,
+        );
+
+        $actions = [
+            'view' => '<a href="https://example.com/author/other_row/">View</a>',
+            'edit' => '<a href="user-edit.php?user_id=24">Edit</a>',
+            'custom' => '<a href="custom">Custom</a>',
+        ];
+
+        $filtered = $plugin->filterUserRowActions($actions, $otherUser);
+        $this->assertSame(['custom' => '<a href="custom">Custom</a>'], $filtered);
+    }
+
+    public function testFilterUserRowActionsSuperAdminCosmeticHide(): void
+    {
+        $superAdmin = (object) [
+            'ID' => 1,
+            'user_login' => 'super_row_admin',
+            'roles' => ['administrator'],
+        ];
+        $targetUser = (object) [
+            'ID' => 24,
+            'user_login' => 'target_row_user',
+            'roles' => ['editor'],
+        ];
+
+        $salt = 'salt_super_row';
+        $hash = hash_hmac('sha512', '1:super_row_admin', $salt);
+
+        $env = [
+            'WP_ADMIN_USER_ACTIONS_CONTROL_VIEW' => 'view|hide:superadmins|block:!superadmins',
+        ];
+        $plugin = new Plugin(
+            fileReader: static fn(string $path): string|false => match ($path) {
+                RuleMatcher::DEFAULT_SALT_SECRETS_PATH => $salt,
+                RuleMatcher::DEFAULT_SUPER_ADMIN_SECRETS_PATH => $hash,
+                default => false,
+            },
+            envGetter: static fn(string $name): string|false => $env[$name] ?? false,
+            currentUserGetter: static fn(): object => $superAdmin,
+            allEnvGetter: static fn(): array => $env,
+        );
+
+        $actions = [
+            'view' => '<a href="https://example.org/author/target_row_user/">View</a>',
+            'edit' => '<a href="user-edit.php?user_id=24">Edit</a>',
+            'delete' => '<a href="users.php?action=delete&amp;user=24">Delete</a>',
+            'custom' => '<a href="admin.php?page=custom">Custom</a>',
+        ];
+
+        $filtered = $plugin->filterUserRowActions($actions, $targetUser);
+        $this->assertSame(
+            [
+                'edit' => '<a href="user-edit.php?user_id=24">Edit</a>',
+                'delete' => '<a href="users.php?action=delete&amp;user=24">Delete</a>',
+                'custom' => '<a href="admin.php?page=custom">Custom</a>',
+            ],
+            $filtered
+        );
+    }
+
+    public function testHandleAdminInitEnforcesUserActionProtectionWithForbiddenHandler(): void
+    {
+        $editor = (object) [
+            'ID' => 30,
+            'user_login' => 'editor_forbidden',
+            'roles' => ['editor'],
+        ];
+
+        $diedMessage = '';
+        $diedCode = 0;
+        $plugin = new Plugin(
+            envGetter: static fn(string $name): string|false => match ($name) {
+                'WP_ADMIN_USER_ACTIONS_CONTROL' => 'edit|block:role:editor',
+                default => false,
+            },
+            currentUserGetter: static fn(): object => $editor,
+            adminChecker: static fn(): bool => true,
+            userLoggedInChecker: static fn(): bool => true,
+            ajaxChecker: static fn(): bool => false,
+            cronChecker: static fn(): bool => false,
+            dieHandler: static function (string $msg, int $code) use (&$diedMessage, &$diedCode): void {
+                $diedMessage = $msg;
+                $diedCode = $code;
+            },
+        );
+
+        $backupPagenow = $GLOBALS['pagenow'] ?? '';
+        try {
+            $GLOBALS['pagenow'] = 'user-edit.php';
+            $plugin->handleAdminInit();
+            $this->assertSame(403, $diedCode);
+            $this->assertSame('Sorry, you are not allowed to access this page.', $diedMessage);
+        } finally {
+            $GLOBALS['pagenow'] = $backupPagenow;
+        }
+    }
 }

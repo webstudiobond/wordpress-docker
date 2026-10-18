@@ -914,4 +914,251 @@ final class SuperAdminCloakingTest extends TestCase
 
         $this->assertSame(['edit_user'], $cloaking->filterMapMetaCap(['edit_user'], 'edit_user', 0, [0]));
     }
+
+    public function testUserActionsControlDefaultsAndChecks(): void
+    {
+        $defaultCloaking = new SuperAdminCloaking();
+        $this->assertSame(['hide' => [], 'block' => []], $defaultCloaking->getUserActionsControlForCurrentUser());
+        $this->assertFalse($defaultCloaking->isUserActionBlocked(''));
+        $this->assertFalse($defaultCloaking->isUserActionBlocked('   '));
+        $this->assertFalse($defaultCloaking->isUserActionBlocked('edit'));
+        $this->assertFalse($defaultCloaking->isEditBlocked());
+
+        $customCloaking = new SuperAdminCloaking(
+            userActionsControlGetter: static fn(): array => [
+                'hide' => ['view', 'resetpassword'],
+                'block' => ['edit', 'wfls', 'admin.php?page=security', 'delete'],
+            ]
+        );
+
+        $this->assertTrue($customCloaking->isUserActionBlocked('edit'));
+        $this->assertTrue($customCloaking->isUserActionBlocked('wfls'));
+        $this->assertTrue($customCloaking->isUserActionBlocked('security'));
+        $this->assertFalse($customCloaking->isUserActionBlocked('unknown'));
+        $this->assertTrue($customCloaking->isEditBlocked());
+        $this->assertTrue($customCloaking->isDeleteBlocked());
+    }
+
+    public function testDieForbiddenWithHandlerAndFallback(): void
+    {
+        $capturedMessage = '';
+        $customCloaking = new SuperAdminCloaking(
+            dieForbiddenHandler: static function (string $msg) use (&$capturedMessage): void {
+                $capturedMessage = $msg;
+            }
+        );
+        $customCloaking->dieForbidden('Access denied custom.');
+        $this->assertSame('Access denied custom.', $capturedMessage);
+
+        ensure_wordpress_stubs();
+        $fallbackCloaking = new SuperAdminCloaking();
+        $fallbackCloaking->dieForbidden('Fallback forbidden.');
+        $lastDie = end($GLOBALS['test_wp_die_calls']);
+        $this->assertSame('Fallback forbidden.', $lastDie['message'] ?? '');
+    }
+
+    public function testFilterUserRowActionsRouteSynergyWithSidebarMenu(): void
+    {
+        $viewer = (object) ['ID' => 5, 'user_login' => 'manager'];
+        $otherUser = (object) ['ID' => 12, 'user_login' => 'editor_user'];
+
+        $cloaking = new SuperAdminCloaking(
+            currentUserGetter: static fn(): object => $viewer,
+            blockedTargetsGetter: static fn(): array => [
+                '',
+                'admin.php?page=WFLS',
+                'user-edit.php',
+                'users.php?action=delete',
+                'tools.php:export_user',
+                'mail-log',
+            ]
+        );
+
+        $actions = [
+            'wfls' => '<a href="admin.php?page=WFLS&amp;user=12">Login Security</a>',
+            'custom_wfls' => '<a href="https://example.com/wp-admin/admin.php?page=WFLS">Security</a>',
+            'edit' => '<a href="user-edit.php?user_id=12">Edit</a>',
+            'delete' => '<a href="users.php?action=delete&amp;user=12">Delete</a>',
+            'export_user' => '<a href="admin.php?page=export_user">Export</a>',
+            'view' => '<a href="https://example.org/author/editor_user/">View</a>',
+            'stats_action' => '<a href="admin.php?page=mail-log">Mail Log</a>',
+        ];
+
+        $filteredOther = $cloaking->filterUserRowActions($actions, $otherUser);
+        $this->assertArrayNotHasKey('wfls', $filteredOther);
+        $this->assertArrayNotHasKey('custom_wfls', $filteredOther);
+        $this->assertArrayNotHasKey('edit', $filteredOther);
+        $this->assertArrayNotHasKey('delete', $filteredOther);
+        $this->assertArrayNotHasKey('export_user', $filteredOther);
+        $this->assertArrayNotHasKey('stats_action', $filteredOther);
+        $this->assertArrayHasKey('view', $filteredOther);
+
+        $selfActions = [
+            'edit' => '<a href="profile.php">Edit Profile</a>',
+            'view' => '<a href="https://example.org/author/manager/">View</a>',
+        ];
+        $filteredSelf = $cloaking->filterUserRowActions($selfActions, $viewer);
+        $this->assertArrayHasKey('edit', $filteredSelf);
+        $this->assertArrayHasKey('view', $filteredSelf);
+
+        $profileBlockedCloaking = new SuperAdminCloaking(
+            currentUserGetter: static fn(): object => $viewer,
+            blockedTargetsGetter: static fn(): array => ['profile.php']
+        );
+        $filteredProfileSelf = $profileBlockedCloaking->filterUserRowActions($selfActions, $viewer);
+        $this->assertArrayNotHasKey('edit', $filteredProfileSelf);
+
+        $filteredProfileOther = $profileBlockedCloaking->filterUserRowActions($selfActions, $otherUser);
+        $this->assertArrayHasKey('edit', $filteredProfileOther);
+    }
+
+    public function testFilterUserRowActionsDeclarativeUserActionsControl(): void
+    {
+        $viewer = (object) ['ID' => 7, 'user_login' => 'staff_user'];
+        $superAdmin = (object) ['ID' => 1, 'user_login' => 'superadmin'];
+        $targetUser = (object) ['ID' => 15, 'user_login' => 'author_user'];
+
+        $cloaking = new SuperAdminCloaking(
+            superAdminChecker: static fn(?object $u): bool => isset($u->ID) && $u->ID === 1,
+            currentUserGetter: static fn(): object => $viewer,
+            userActionsControlGetter: static fn(): array => [
+                'hide' => ['view', 'resetpassword', 'edit', 'delete'],
+                'block' => ['edit', 'delete'],
+            ]
+        );
+
+        $actions = [
+            'view' => '<a href="https://example.net/author/author_user/">View</a>',
+            'resetpassword' => '<a href="users.php?action=resetpassword">Reset Password</a>',
+            'edit' => '<a href="user-edit.php?user_id=15">Edit</a>',
+            'delete' => '<a href="users.php?action=delete&amp;user=15">Delete</a>',
+            'stats' => '<a href="admin.php?page=user-stats">Stats</a>',
+        ];
+
+        $filtered = $cloaking->filterUserRowActions($actions, $targetUser);
+        $this->assertSame(['stats' => '<a href="admin.php?page=user-stats">Stats</a>'], $filtered);
+
+        $this->assertSame([], $cloaking->filterUserRowActions($actions, $superAdmin));
+
+        $superCloaking = new SuperAdminCloaking(
+            superAdminChecker: static fn(?object $u): bool => isset($u->ID) && $u->ID === 1,
+            currentUserGetter: static fn(): object => $superAdmin,
+            userActionsControlGetter: static fn(): array => [
+                'hide' => ['view', 'resetpassword'],
+                'block' => ['edit', 'delete'],
+            ]
+        );
+        $expectedSuperActions = [
+            'edit' => '<a href="user-edit.php?user_id=15">Edit</a>',
+            'delete' => '<a href="users.php?action=delete&amp;user=15">Delete</a>',
+            'stats' => '<a href="admin.php?page=user-stats">Stats</a>',
+        ];
+        $this->assertSame($expectedSuperActions, $superCloaking->filterUserRowActions($actions, $targetUser));
+        $this->assertSame($expectedSuperActions, $superCloaking->filterUserRowActions($actions, $superAdmin));
+        $this->assertFalse($superCloaking->isUserActionBlocked('edit'));
+        $this->assertFalse($superCloaking->isEditBlocked());
+        $this->assertFalse($superCloaking->isTargetBlocked('user-edit.php'));
+        $this->assertFalse($superCloaking->isDeleteBlocked());
+    }
+
+    public function testFilterMapMetaCapWithBlockedUserActions(): void
+    {
+        $editor = (object) ['ID' => 8, 'user_login' => 'editor_cap'];
+
+        $cloaking = new SuperAdminCloaking(
+            currentUserGetter: static fn(): object => $editor,
+            userDataGetter: static fn(int $id): ?object => $editor,
+            userActionsControlGetter: static fn(): array => [
+                'hide' => ['edit', 'delete'],
+                'block' => ['edit', 'delete'],
+            ]
+        );
+
+        $this->assertSame(['do_not_allow'], $cloaking->filterMapMetaCap(['edit_users'], 'edit_users', 8, []));
+        $this->assertSame(['do_not_allow'], $cloaking->filterMapMetaCap(['edit_user'], 'edit_user', 8, [15]));
+        $this->assertSame(['do_not_allow'], $cloaking->filterMapMetaCap(['edit_user'], 'edit_user', 8, [8]));
+        $this->assertSame(['do_not_allow'], $cloaking->filterMapMetaCap(['delete_users'], 'delete_users', 8, []));
+        $this->assertSame(['do_not_allow'], $cloaking->filterMapMetaCap(['delete_user'], 'delete_user', 8, [15]));
+
+        $profileBlockCloaking = new SuperAdminCloaking(
+            currentUserGetter: static fn(): object => $editor,
+            userDataGetter: static fn(int $id): ?object => $editor,
+            userActionsControlGetter: static fn(): array => [
+                'hide' => ['profile.php'],
+                'block' => ['profile.php'],
+            ]
+        );
+        $this->assertSame(
+            ['do_not_allow'],
+            $profileBlockCloaking->filterMapMetaCap(['edit_user'], 'edit_user', 8, [8])
+        );
+    }
+
+    public function testEnforceUserActionProtectionWithBlockedUserActions(): void
+    {
+        $editor = (object) ['ID' => 9, 'user_login' => 'editor_guard'];
+        $superAdmin = (object) ['ID' => 1, 'user_login' => 'superadmin'];
+
+        $forbiddenMessage = '';
+        $cloaking = new SuperAdminCloaking(
+            superAdminChecker: static fn(?object $u): bool => isset($u->ID) && $u->ID === 1,
+            currentUserGetter: static fn(): object => $editor,
+            userActionsControlGetter: static fn(): array => [
+                'hide' => ['edit', 'delete', 'wfls'],
+                'block' => ['edit', 'delete', 'wfls'],
+            ],
+            dieForbiddenHandler: static function (string $msg) use (&$forbiddenMessage): void {
+                $forbiddenMessage = $msg;
+            }
+        );
+
+        $forbiddenMessage = '';
+        $cloaking->enforceUserActionProtection('user-edit.php');
+        $this->assertSame('Sorry, you are not allowed to access this page.', $forbiddenMessage);
+
+        $_GET['page'] = 'WFLS';
+        $forbiddenMessage = '';
+        $cloaking->enforceUserActionProtection('admin.php');
+        $this->assertSame('Sorry, you are not allowed to access this page.', $forbiddenMessage);
+
+        $_GET['page'] = 'allowed_page';
+        $forbiddenMessage = '';
+        $cloaking->enforceUserActionProtection('admin.php');
+        $this->assertSame('', $forbiddenMessage);
+
+        unset($_GET['page']);
+        $cloaking->enforceUserActionProtection('admin.php');
+        $this->assertSame('', $forbiddenMessage);
+
+        $_REQUEST['action'] = 'delete';
+        $forbiddenMessage = '';
+        $cloaking->enforceUserActionProtection('users.php');
+        $this->assertSame('Sorry, you are not allowed to access this page.', $forbiddenMessage);
+
+        $_REQUEST['action'] = '-1';
+        $_REQUEST['action2'] = 'dodelete';
+        $forbiddenMessage = '';
+        $cloaking->enforceUserActionProtection('users.php');
+        $this->assertSame('Sorry, you are not allowed to access this page.', $forbiddenMessage);
+
+        unset($_REQUEST['action'], $_REQUEST['action2']);
+        $forbiddenMessage = '';
+        $cloaking->enforceUserActionProtection('options-general.php');
+        $this->assertSame('', $forbiddenMessage);
+
+        $superCloaking = new SuperAdminCloaking(
+            superAdminChecker: static fn(?object $u): bool => true,
+            currentUserGetter: static fn(): object => $superAdmin,
+            userActionsControlGetter: static fn(): array => [
+                'hide' => ['edit', 'delete', 'wfls'],
+                'block' => ['edit', 'delete', 'wfls'],
+            ],
+            dieForbiddenHandler: static function (string $msg) use (&$forbiddenMessage): void {
+                $forbiddenMessage = $msg;
+            }
+        );
+        $forbiddenMessage = '';
+        $superCloaking->enforceUserActionProtection('user-edit.php');
+        $this->assertSame('', $forbiddenMessage);
+    }
 }
