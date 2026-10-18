@@ -71,7 +71,7 @@ Production-ready, fully decoupled, and resource-efficient containerized WordPres
     ├── wp-config.php                # Site configuration (from examples/data/wp-config.php.example)
     ├── wp-content/                  # User content directory
     │   ├── mu-plugins/              # Must-use plugins directory
-    │   │   └── sbs-loader.php       # Platform loader (mounted :ro, root:${SITE_USER} 0640)
+    │   │   └── sbs-loader.php       # Platform loader (mounted :ro, root:${SITE_USER} 0440)
     │   ├── uploads/                 # Uploaded media assets
     │   └── ...
     └── ...                          # WordPress core files (auto-populated by init service)
@@ -107,9 +107,13 @@ sudo chmod 0750 /home/${SITE_USER}
 ### 2. Create Directory Structure
 
 ```bash
-sudo mkdir -p /home/${SITE_USER}/{.wp-cli,data/wp-content/uploads,mariadb,mariadb-backup,secrets,tmp,config/{angie/conf.d,mysql,php,valkey}}
-sudo chown -R ${SITE_USER}:${SITE_USER} /home/${SITE_USER}/{.wp-cli,data,mariadb,mariadb-backup,tmp}
-sudo chmod 0700 /home/${SITE_USER}/{.wp-cli,data,mariadb,mariadb-backup,tmp}
+SITE_USER=mysite
+DATA_DIR=data
+WP_CONTENT_DIR=wp-content
+
+sudo mkdir -p /home/${SITE_USER}/{.wp-cli,${DATA_DIR}/${WP_CONTENT_DIR}/uploads,mariadb,mariadb-backup,secrets,tmp,config/{angie/conf.d,mysql,php,valkey}}
+sudo chown -R ${SITE_USER}:${SITE_USER} /home/${SITE_USER}/{.wp-cli,${DATA_DIR},mariadb,mariadb-backup,tmp}
+sudo chmod 0700 /home/${SITE_USER}/{.wp-cli,${DATA_DIR},mariadb,mariadb-backup,tmp}
 sudo chown -R root:${SITE_USER} /home/${SITE_USER}/{config,secrets}
 sudo chmod -R 0750 /home/${SITE_USER}/{config,secrets}
 ```
@@ -171,11 +175,15 @@ sudo find /home/${SITE_USER}/config -type f -exec chmod 0640 {} +
 ### 5. Download Compose Manifest and Application Config
 
 ```bash
+SITE_USER=mysite
+DATA_DIR=data
+REPO="https://raw.githubusercontent.com/webstudiobond/wordpress-docker/main"
+
 sudo curl -fsSL ${REPO}/docker-compose.yaml -o /home/${SITE_USER}/docker-compose.yaml
 sudo curl -fsSL ${REPO}/examples/.env.example -o /home/${SITE_USER}/.env
 sudo curl -fsSL ${REPO}/examples/wordpress.env.example -o /home/${SITE_USER}/wordpress.env
 sudo chmod 0600 /home/${SITE_USER}/{docker-compose.yaml,.env,wordpress.env}
-sudo -u ${SITE_USER} curl -fsSL ${REPO}/examples/data/wp-config.php.example -o /home/${SITE_USER}/data/wp-config.php
+sudo -u ${SITE_USER} curl -fsSL ${REPO}/examples/data/wp-config.php.example -o /home/${SITE_USER}/${DATA_DIR}/wp-config.php
 ```
 
 ### 6. Configure Environment
@@ -272,11 +280,16 @@ To provide high-performance, non-blocking delivery without storing plaintext SMT
 3. **Install the SBS Platform Loader:**
    Download `sbs-loader.php`, which dynamically and securely loads platform MU-plugins (including `wp-notify.php` by default) from the immutable container layer:
    ```bash
-   sudo -u ${SITE_USER} mkdir -p /home/${SITE_USER}/data/wp-content/mu-plugins
+   SITE_USER=mysite
+   DATA_DIR=data
+   WP_CONTENT_DIR=wp-content
+   REPO="https://raw.githubusercontent.com/webstudiobond/wordpress-docker/main"
+
+   sudo -u ${SITE_USER} mkdir -p /home/${SITE_USER}/${DATA_DIR}/${WP_CONTENT_DIR}/mu-plugins
    sudo curl -fsSL ${REPO}/mu-plugins/sbs-loader.php \
-     -o /home/${SITE_USER}/data/wp-content/mu-plugins/sbs-loader.php
-   sudo chown root:${SITE_USER} /home/${SITE_USER}/data/wp-content/mu-plugins/sbs-loader.php
-   sudo chmod 0640 /home/${SITE_USER}/data/wp-content/mu-plugins/sbs-loader.php
+     -o /home/${SITE_USER}/${DATA_DIR}/${WP_CONTENT_DIR}/mu-plugins/sbs-loader.php
+   sudo chown root:${SITE_USER} /home/${SITE_USER}/${DATA_DIR}/${WP_CONTENT_DIR}/mu-plugins/sbs-loader.php
+   sudo chmod 0440 /home/${SITE_USER}/${DATA_DIR}/${WP_CONTENT_DIR}/mu-plugins/sbs-loader.php
    ```
    `sbs-loader.php` is mounted read-only into the container. It loads `wp-notify.php` from `/usr/local/share/wordpress/mu-plugins/` to intercept all `wp_mail()` calls and dispatch them to `/var/run/sockets/notify/notify.sock`.
 
@@ -328,17 +341,19 @@ docker compose -f /home/${SITE_USER}/docker-compose.yaml down
 
 All platform MU-plugins are pre-installed directly inside the container image at `/usr/local/share/wordpress/mu-plugins/` (immutable read-only system layer). They cannot be modified or tampered with by web processes or compromised plugins.
 
-To activate them, you only install a single lightweight loader — **`sbs-loader.php`** — into `data/wp-content/mu-plugins/`:
+To activate them, you only install a single lightweight loader — **`sbs-loader.php`** — into `${DATA_DIR}/${WP_CONTENT_DIR}/mu-plugins/`:
 
 ```bash
 SITE_USER=mysite
+DATA_DIR=data
+WP_CONTENT_DIR=wp-content
 REPO="https://raw.githubusercontent.com/webstudiobond/wordpress-docker/main"
 
-sudo -u ${SITE_USER} mkdir -p /home/${SITE_USER}/data/wp-content/mu-plugins
+sudo -u ${SITE_USER} mkdir -p /home/${SITE_USER}/${DATA_DIR}/${WP_CONTENT_DIR}/mu-plugins
 sudo curl -fsSL ${REPO}/mu-plugins/sbs-loader.php \
-  -o /home/${SITE_USER}/data/wp-content/mu-plugins/sbs-loader.php
-sudo chown root:${SITE_USER} /home/${SITE_USER}/data/wp-content/mu-plugins/sbs-loader.php
-sudo chmod 0640 /home/${SITE_USER}/data/wp-content/mu-plugins/sbs-loader.php
+  -o /home/${SITE_USER}/${DATA_DIR}/${WP_CONTENT_DIR}/mu-plugins/sbs-loader.php
+sudo chown root:${SITE_USER} /home/${SITE_USER}/${DATA_DIR}/${WP_CONTENT_DIR}/mu-plugins/sbs-loader.php
+sudo chmod 0440 /home/${SITE_USER}/${DATA_DIR}/${WP_CONTENT_DIR}/mu-plugins/sbs-loader.php
 ```
 
 `sbs-loader.php` is mounted into the container as **read-only** (`:ro`), and its SHA-256 integrity is strictly verified by `wp-guard` during container startup.
@@ -401,10 +416,10 @@ The stack enforces strict host-level privilege separation across three ownership
   * `config/` — directories `0750`, files `0640` (mounted `:ro` into containers)
   * `secrets/` — directory `0750`, secret files `0440` (containers have group read-only access and cannot `chmod` or overwrite files)
   * `snippets/` *(optional)* — directory `0750`, snippet files `0640` (mounted `:ro,noexec,nosuid,nodev` at `/etc/wordpress/snippets`)
-  * `data/wp-content/mu-plugins/sbs-loader.php` — `0640` (mounted `:ro` into containers)
+  * `${DATA_DIR}/${WP_CONTENT_DIR}/mu-plugins/sbs-loader.php` — `0440` (mounted `:ro` into containers)
 * **`${SITE_USER}:${SITE_USER}` (Runtime Writable Storage):**
   * `.wp-cli/`, `mariadb/`, `tmp/` — `0700`
-  * `data/` — top-level directory `0700`, `wp-admin/` and `wp-includes/` `0700`, content directories (`wp-content/`) `0750`, internal files `0640`
+  * `${DATA_DIR}/` — top-level directory `0700`, `wp-admin/` and `wp-includes/` `0700`, content directories (`${WP_CONTENT_DIR}/`) `0750`, internal files `0640`
 
 ### One-Shot Permission Reset (Running Stack)
 
@@ -412,6 +427,8 @@ Use this self-contained block to apply or restore canonical ownership and permis
 
 ```bash
 SITE_USER=mysite
+DATA_DIR=data
+WP_CONTENT_DIR=wp-content
 
 sudo chown root:${SITE_USER} /home/${SITE_USER}/
 sudo chmod 0750 /home/${SITE_USER}
@@ -432,15 +449,15 @@ sudo chmod 0440 /home/${SITE_USER}/secrets/*.txt
 [ -d /home/${SITE_USER}/snippets ] && sudo chown -R root:${SITE_USER} /home/${SITE_USER}/snippets && sudo chmod 0750 /home/${SITE_USER}/snippets && sudo find /home/${SITE_USER}/snippets -type f -exec chmod 0640 {} +
 
 # 3. Runtime writable directories & WordPress files (${SITE_USER}:${SITE_USER})
-sudo chown -R ${SITE_USER}:${SITE_USER} /home/${SITE_USER}/{.wp-cli,data,mariadb,tmp}
-sudo chmod 0700 /home/${SITE_USER}/{.wp-cli,data,mariadb,tmp}
-sudo find /home/${SITE_USER}/data -mindepth 1 -type d -exec chmod 0750 {} +
-[ -d /home/${SITE_USER}/data/wp-admin ] && sudo chmod 0700 /home/${SITE_USER}/data/wp-admin
-[ -d /home/${SITE_USER}/data/wp-includes ] && sudo chmod 0700 /home/${SITE_USER}/data/wp-includes
-sudo find /home/${SITE_USER}/data -type f -exec chmod 0640 {} +
+sudo chown -R ${SITE_USER}:${SITE_USER} /home/${SITE_USER}/{.wp-cli,${DATA_DIR},mariadb,tmp}
+sudo chmod 0700 /home/${SITE_USER}/{.wp-cli,${DATA_DIR},mariadb,tmp}
+sudo find /home/${SITE_USER}/${DATA_DIR} -mindepth 1 -type d -exec chmod 0750 {} +
+[ -d /home/${SITE_USER}/${DATA_DIR}/wp-admin ] && sudo chmod 0700 /home/${SITE_USER}/${DATA_DIR}/wp-admin
+[ -d /home/${SITE_USER}/${DATA_DIR}/wp-includes ] && sudo chmod 0700 /home/${SITE_USER}/${DATA_DIR}/wp-includes
+sudo find /home/${SITE_USER}/${DATA_DIR} -type f -exec chmod 0640 {} +
 
-# 4. Read-only platform loader (root:${SITE_USER} 0640)
-[ -f /home/${SITE_USER}/data/wp-content/mu-plugins/sbs-loader.php ] && sudo chown root:${SITE_USER} /home/${SITE_USER}/data/wp-content/mu-plugins/sbs-loader.php && sudo chmod 0640 /home/${SITE_USER}/data/wp-content/mu-plugins/sbs-loader.php
+# 4. Read-only platform loader (root:${SITE_USER} 0440)
+[ -f /home/${SITE_USER}/${DATA_DIR}/${WP_CONTENT_DIR}/mu-plugins/sbs-loader.php ] && sudo chown root:${SITE_USER} /home/${SITE_USER}/${DATA_DIR}/${WP_CONTENT_DIR}/mu-plugins/sbs-loader.php && sudo chmod 0440 /home/${SITE_USER}/${DATA_DIR}/${WP_CONTENT_DIR}/mu-plugins/sbs-loader.php
 ```
 
 </details>
@@ -645,7 +662,7 @@ If your site or plugins rely on `HTTP_HOST` for dynamic URLs, configure the URL 
 
 1. **`wp-cli.yml` (recommended):**
    ```bash
-   sudo -u ${SITE_USER} nano /home/${SITE_USER}/data/wp-cli.yml
+   sudo -u ${SITE_USER} nano /home/${SITE_USER}/${DATA_DIR}/wp-cli.yml
    ```
    ```yaml
    url: https://wordpress.example
@@ -801,15 +818,17 @@ Provision the host user, directories, secrets, and configuration files in a sing
 
 ```bash
 SITE_USER=mysite
+DATA_DIR=data
+WP_CONTENT_DIR=wp-content
 REPO="https://raw.githubusercontent.com/webstudiobond/wordpress-docker/main"
 
 # 1. Create system user and directory structure
 sudo useradd -m -d /home/${SITE_USER} -s /usr/sbin/nologin ${SITE_USER}
 sudo chown root:${SITE_USER} /home/${SITE_USER}
 sudo chmod 0750 /home/${SITE_USER}
-sudo mkdir -p /home/${SITE_USER}/{.wp-cli,data/wp-content/{mu-plugins,uploads},mariadb,mariadb-backup,secrets,tmp,config/{angie/conf.d,mysql,php,valkey}}
-sudo chown -R ${SITE_USER}:${SITE_USER} /home/${SITE_USER}/{.wp-cli,data,mariadb,mariadb-backup,tmp}
-sudo chmod 0700 /home/${SITE_USER}/{.wp-cli,data,mariadb,mariadb-backup,tmp}
+sudo mkdir -p /home/${SITE_USER}/{.wp-cli,${DATA_DIR}/${WP_CONTENT_DIR}/{mu-plugins,uploads},mariadb,mariadb-backup,secrets,tmp,config/{angie/conf.d,mysql,php,valkey}}
+sudo chown -R ${SITE_USER}:${SITE_USER} /home/${SITE_USER}/{.wp-cli,${DATA_DIR},mariadb,mariadb-backup,tmp}
+sudo chmod 0700 /home/${SITE_USER}/{.wp-cli,${DATA_DIR},mariadb,mariadb-backup,tmp}
 sudo chown -R root:${SITE_USER} /home/${SITE_USER}/{config,secrets}
 sudo chmod -R 0750 /home/${SITE_USER}/{config,secrets}
 
@@ -859,20 +878,20 @@ sudo curl -fsSL ${REPO}/examples/wordpress.env.example -o /home/${SITE_USER}/wor
 sudo curl -fsSL ${REPO}/examples/notifier.env.example -o /home/${SITE_USER}/notifier.env
 sudo chmod 0600 /home/${SITE_USER}/{docker-compose.yaml,.env,wordpress.env,notifier.env}
 
-sudo -u ${SITE_USER} curl -fsSL ${REPO}/examples/data/wp-config.php.example -o /home/${SITE_USER}/data/wp-config.php
+sudo -u ${SITE_USER} curl -fsSL ${REPO}/examples/data/wp-config.php.example -o /home/${SITE_USER}/${DATA_DIR}/wp-config.php
 sudo curl -fsSL ${REPO}/mu-plugins/sbs-loader.php \
-  -o /home/${SITE_USER}/data/wp-content/mu-plugins/sbs-loader.php
-sudo chown root:${SITE_USER} /home/${SITE_USER}/data/wp-content/mu-plugins/sbs-loader.php
-sudo chmod 0640 /home/${SITE_USER}/data/wp-content/mu-plugins/sbs-loader.php
+  -o /home/${SITE_USER}/${DATA_DIR}/${WP_CONTENT_DIR}/mu-plugins/sbs-loader.php
+sudo chown root:${SITE_USER} /home/${SITE_USER}/${DATA_DIR}/${WP_CONTENT_DIR}/mu-plugins/sbs-loader.php
+sudo chmod 0440 /home/${SITE_USER}/${DATA_DIR}/${WP_CONTENT_DIR}/mu-plugins/sbs-loader.php
 ```
 
-Configure `.env` (set `SITE_USER`, `APP_UID`, `APP_GID` from `id ${SITE_USER}`), `wordpress.env`, `notifier.env`, and transfer any custom plugin/theme constants from your old `wp-config.php` into `/home/${SITE_USER}/data/wp-config.php`:
+Configure `.env` (set `SITE_USER`, `APP_UID`, `APP_GID` from `id ${SITE_USER}`), `wordpress.env`, `notifier.env`, and transfer any custom plugin/theme constants from your old `wp-config.php` into `/home/${SITE_USER}/${DATA_DIR}/wp-config.php`:
 
 ```bash
 sudo nano /home/${SITE_USER}/.env
 sudo nano /home/${SITE_USER}/wordpress.env
 sudo nano /home/${SITE_USER}/notifier.env
-sudo -u ${SITE_USER} nano /home/${SITE_USER}/data/wp-config.php
+sudo -u ${SITE_USER} nano /home/${SITE_USER}/${DATA_DIR}/wp-config.php
 ```
 
 Transfer `wordpress-files.tar.gz` to `/home/${SITE_USER}/` and the SQL dump `site.sql` into `/home/${SITE_USER}/mariadb-backup/` (e.g. via `scp`/`rsync`).
@@ -881,15 +900,15 @@ Transfer `wordpress-files.tar.gz` to `/home/${SITE_USER}/` and the SQL dump `sit
 
 ```bash
 sudo -u ${SITE_USER} tar -xzf /home/${SITE_USER}/wordpress-files.tar.gz \
-  -C /home/${SITE_USER}/data \
+  -C /home/${SITE_USER}/${DATA_DIR} \
   --exclude=wp-config.php
-sudo chown -R ${SITE_USER}:${SITE_USER} /home/${SITE_USER}/data
-sudo chmod 0700 /home/${SITE_USER}/data
-sudo find /home/${SITE_USER}/data -mindepth 1 -type d -exec chmod 0750 {} +
-[ -d /home/${SITE_USER}/data/wp-admin ] && sudo chmod 0700 /home/${SITE_USER}/data/wp-admin
-[ -d /home/${SITE_USER}/data/wp-includes ] && sudo chmod 0700 /home/${SITE_USER}/data/wp-includes
-sudo find /home/${SITE_USER}/data -type f -exec chmod 0640 {} +
-[ -f /home/${SITE_USER}/data/wp-content/mu-plugins/sbs-loader.php ] && sudo chown root:${SITE_USER} /home/${SITE_USER}/data/wp-content/mu-plugins/sbs-loader.php && sudo chmod 0640 /home/${SITE_USER}/data/wp-content/mu-plugins/sbs-loader.php
+sudo chown -R ${SITE_USER}:${SITE_USER} /home/${SITE_USER}/${DATA_DIR}
+sudo chmod 0700 /home/${SITE_USER}/${DATA_DIR}
+sudo find /home/${SITE_USER}/${DATA_DIR} -mindepth 1 -type d -exec chmod 0750 {} +
+[ -d /home/${SITE_USER}/${DATA_DIR}/wp-admin ] && sudo chmod 0700 /home/${SITE_USER}/${DATA_DIR}/wp-admin
+[ -d /home/${SITE_USER}/${DATA_DIR}/wp-includes ] && sudo chmod 0700 /home/${SITE_USER}/${DATA_DIR}/wp-includes
+sudo find /home/${SITE_USER}/${DATA_DIR} -type f -exec chmod 0640 {} +
+[ -f /home/${SITE_USER}/${DATA_DIR}/${WP_CONTENT_DIR}/mu-plugins/sbs-loader.php ] && sudo chown root:${SITE_USER} /home/${SITE_USER}/${DATA_DIR}/${WP_CONTENT_DIR}/mu-plugins/sbs-loader.php && sudo chmod 0440 /home/${SITE_USER}/${DATA_DIR}/${WP_CONTENT_DIR}/mu-plugins/sbs-loader.php
 ```
 
 ### 5. Replace old filesystem paths in files
@@ -900,10 +919,10 @@ Before starting the containers, update all absolute filesystem paths inside `.ph
 
 ```bash
 # Standard filesystem paths
-find /home/${SITE_USER}/data -type f \( -name "*.php" -o -name "*.json" -o -name "*.ini" -o -name "*.txt" -o -name "*.conf" -o -name "*.xml" \) -exec sed -i 's|/old/path/to/site/root|/var/www/html|g' {} +
+find /home/${SITE_USER}/${DATA_DIR} -type f \( -name "*.php" -o -name "*.json" -o -name "*.ini" -o -name "*.txt" -o -name "*.conf" -o -name "*.xml" \) -exec sed -i 's|/old/path/to/site/root|/var/www/html|g' {} +
 
 # JSON-escaped paths (common in security rewrite rules and serialized config files)
-find /home/${SITE_USER}/data -type f \( -name "*.php" -o -name "*.json" -o -name "*.ini" -o -name "*.txt" -o -name "*.conf" -o -name "*.xml" \) -exec sed -i 's|\\/old\\/path\\/to\\/site\\/root|\\/var\\/www\\/html|g' {} +
+find /home/${SITE_USER}/${DATA_DIR} -type f \( -name "*.php" -o -name "*.json" -o -name "*.ini" -o -name "*.txt" -o -name "*.conf" -o -name "*.xml" \) -exec sed -i 's|\\/old\\/path\\/to\\/site\\/root|\\/var\\/www\\/html|g' {} +
 ```
 
 ### 6. Start the stack
