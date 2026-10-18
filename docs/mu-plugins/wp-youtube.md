@@ -1,7 +1,8 @@
 # YouTube Channel Statistics & oEmbed Tools
 
 * **Slug:** `youtube`
-* **Source:** `examples/data/wp-content/mu-plugins/wp-youtube.php.example`
+* **Source:** `mu-plugins/sbs-platform/wp-youtube/` (entrypoint: `wp-youtube.php`)
+* **Activation:** `WP_ENABLED_MU_PLUGINS=youtube`
 
 ## Overview
 

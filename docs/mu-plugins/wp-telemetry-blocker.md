@@ -1,7 +1,8 @@
 # Client-Side Telemetry & Tracker Blocker
 
 * **Slug:** `telemetry-blocker`
-* **Source:** `examples/data/wp-content/mu-plugins/wp-telemetry-blocker.php.example`
+* **Source:** `mu-plugins/sbs-platform/wp-telemetry-blocker/` (entrypoint: `wp-telemetry-blocker.php`)
+* **Activation:** `WP_ENABLED_MU_PLUGINS=telemetry-blocker`
 
 ## Overview
 

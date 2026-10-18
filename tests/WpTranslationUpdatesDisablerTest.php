@@ -9,7 +9,7 @@ use PHPUnit\Framework\Attributes\PreserveGlobalState;
 use PHPUnit\Framework\Attributes\RunInSeparateProcess;
 use PHPUnit\Framework\TestCase;
 use stdClass;
-use WpTranslationUpdatesDisabler;
+use WordPressDocker\TranslationUpdates\WpTranslationUpdatesDisabler;
 
 final class WpTranslationUpdatesDisablerTest extends TestCase
 {
@@ -268,7 +268,7 @@ final class WpTranslationUpdatesDisablerTest extends TestCase
     {
         ensure_wordpress_filter_stubs();
         $GLOBALS['test_registered_filters'] = [];
-        require_once __DIR__ . '/../examples/data/wp-content/mu-plugins/wp-translation-updates-disabler.php.example';
+        require_once __DIR__ . '/../mu-plugins/sbs-platform/wp-translation-updates-disabler.php';
 
         $this->assertArrayHasKey('auto_update_translation', $GLOBALS['test_registered_filters']);
         $this->assertArrayHasKey('async_update_translation', $GLOBALS['test_registered_filters']);

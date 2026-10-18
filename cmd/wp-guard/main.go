@@ -28,6 +28,20 @@ func printLine(w io.Writer, a ...any) {
 	}
 }
 
+const (
+	defaultDonorDir      = "/usr/src/wordpress"
+	defaultMuDir         = "/usr/local/share/wordpress/mu-plugins"
+	defaultSbsLoaderPath = "/usr/local/share/wordpress/sbs-loader.php"
+	defaultManifestPath  = "/usr/local/share/wordpress/core-manifest.json"
+)
+
+var (
+	manifestDonorDir      = defaultDonorDir
+	manifestMuDir         = defaultMuDir
+	manifestSbsLoaderPath = defaultSbsLoaderPath
+	manifestOutputPath    = defaultManifestPath
+)
+
 func getEnvOrDefault(envKey, defaultVal string) string {
 	if val, ok := os.LookupEnv(envKey); ok && val != "" {
 		return val
@@ -39,9 +53,9 @@ func runSyncCommand(ctx context.Context, args []string, stdout, stderr io.Writer
 	fs := flag.NewFlagSet("sync", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 
-	sourceDir := fs.String("source", getEnvOrDefault("WP_DONOR_DIR", "/usr/src/wordpress"), "Donor WordPress source directory")
+	sourceDir := fs.String("source", getEnvOrDefault("WP_DONOR_DIR", defaultDonorDir), "Donor WordPress source directory")
 	targetDir := fs.String("target", getEnvOrDefault("WP_WEB_DIR", "/var/www/html"), "Target WordPress web directory")
-	manifestPath := fs.String("manifest", getEnvOrDefault("WP_MANIFEST_PATH", "/usr/local/share/wordpress/core-manifest.json"), "Path to core integrity manifest")
+	manifestPath := fs.String("manifest", getEnvOrDefault("WP_MANIFEST_PATH", defaultManifestPath), "Path to core integrity manifest")
 	contentDir := fs.String("content-dir", getEnvOrDefault("WP_CONTENT_DIR", getEnvOrDefault("WP_CONTENT_FOLDERNAME", "wp-content")), "Custom content directory name")
 
 	if err := fs.Parse(args); err != nil {
@@ -69,31 +83,24 @@ func runManifestCommand(ctx context.Context, args []string, stdout, stderr io.Wr
 	if len(args) > 0 && args[0] == "generate" {
 		subArgs = args[1:]
 	}
-
-	fs := flag.NewFlagSet("manifest", flag.ContinueOnError)
-	fs.SetOutput(stderr)
-
-	sourceDir := fs.String("source", getEnvOrDefault("WP_DONOR_DIR", "/usr/src/wordpress"), "Donor WordPress directory to scan")
-	muDir := fs.String("mu-dir", getEnvOrDefault("WP_PLATFORM_MU_DIR", "/usr/local/share/wordpress/mu-plugins"), "Platform MU-plugins directory")
-	outputFile := fs.String("output", getEnvOrDefault("WP_MANIFEST_PATH", "/usr/local/share/wordpress/core-manifest.json"), "Target manifest JSON output path")
-
-	if err := fs.Parse(subArgs); err != nil {
+	if len(subArgs) > 0 {
+		printMsg(stderr, "[wp-guard] manifest generate takes no options\n")
 		return 2
 	}
 
-	printMsg(stdout, "[wp-guard] Generating manifest from %s...\n", *sourceDir)
-	m, err := manifest.Generate(ctx, *sourceDir, *muDir)
+	printMsg(stdout, "[wp-guard] Generating manifest from %s...\n", manifestDonorDir)
+	m, err := manifest.Generate(ctx, manifestDonorDir, manifestMuDir, manifestSbsLoaderPath)
 	if err != nil {
 		printMsg(stderr, "[wp-guard] %v\n", err)
 		return 1
 	}
 
-	if err := manifest.Save(*outputFile, m); err != nil {
+	if err := manifest.Save(manifestOutputPath, m); err != nil {
 		printMsg(stderr, "[wp-guard] %v\n", err)
 		return 1
 	}
 
-	printMsg(stdout, "[wp-guard] Manifest successfully generated with %d core files to %s\n", len(m.CoreFiles), *outputFile)
+	printMsg(stdout, "[wp-guard] Manifest successfully generated with %d core files to %s\n", len(m.CoreFiles), manifestOutputPath)
 	return 0
 }
 
@@ -180,11 +187,6 @@ Options for sync:
   --target <dir>        Live WordPress directory (default: /var/www/html)
   --manifest <path>     Manifest JSON path (default: /usr/local/share/wordpress/core-manifest.json)
   --content-dir <name>  Custom content directory name (default: wp-content)
-
-Options for manifest generate:
-  --source <dir>        Donor directory to scan
-  --mu-dir <dir>        Platform MU-plugins directory to scan
-  --output <path>       Target manifest JSON path
 
 Options for superadmin:
   --salt-file <path>    Salt secret path (default: /run/secrets/auth_salt)

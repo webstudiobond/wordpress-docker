@@ -10,7 +10,7 @@ use PHPUnit\Framework\Attributes\PreserveGlobalState;
 use PHPUnit\Framework\Attributes\RunInSeparateProcess;
 use PHPUnit\Framework\TestCase;
 use stdClass;
-use WpPostDuplicator;
+use WordPressDocker\PostDuplicator\WpPostDuplicator;
 
 final class WpPostDuplicatorTest extends TestCase
 {
@@ -447,7 +447,7 @@ final class WpPostDuplicatorTest extends TestCase
         $GLOBALS['test_registered_actions'] = [];
         $GLOBALS['test_registered_filters'] = [];
 
-        require_once __DIR__ . '/../examples/data/wp-content/mu-plugins/wp-post-duplicator.php.example';
+        require_once __DIR__ . '/../mu-plugins/sbs-platform/wp-post-duplicator.php';
 
         $this->assertArrayHasKey('admin_action_wp_duplicate_post', $GLOBALS['test_registered_actions']);
         $this->assertArrayHasKey('post_row_actions', $GLOBALS['test_registered_filters']);

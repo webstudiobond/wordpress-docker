@@ -1,7 +1,8 @@
 # Article Reading Time Shortcode
 
 * **Slug:** `reading-time`
-* **Source:** `examples/data/wp-content/mu-plugins/wp-reading-time.php.example`
+* **Source:** `mu-plugins/sbs-platform/wp-reading-time/` (entrypoint: `wp-reading-time.php`)
+* **Activation:** `WP_ENABLED_MU_PLUGINS=reading-time`
 
 ## Overview
 

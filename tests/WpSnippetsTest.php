@@ -9,7 +9,7 @@ use PHPUnit\Framework\Attributes\DependsExternal;
 use PHPUnit\Framework\Attributes\PreserveGlobalState;
 use PHPUnit\Framework\Attributes\RunInSeparateProcess;
 use PHPUnit\Framework\TestCase;
-use WpSnippets;
+use WordPressDocker\Snippets\WpSnippets;
 
 final class WpSnippetsTest extends TestCase
 {
@@ -514,7 +514,7 @@ final class WpSnippetsTest extends TestCase
         putenv('WP_GTM_ID=GTM-BOOT123');
 
         try {
-            require __DIR__ . '/../examples/data/wp-content/mu-plugins/wp-snippets.php.example';
+            require __DIR__ . '/../mu-plugins/sbs-platform/wp-snippets.php';
             $this->assertArrayHasKey('wp_head', $GLOBALS['test_registered_actions']);
 
             $requestedPath = '';

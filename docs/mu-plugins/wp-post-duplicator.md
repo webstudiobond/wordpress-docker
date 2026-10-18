@@ -1,7 +1,8 @@
 # Post & Page Duplicator
 
 * **Slug:** `post-duplicator`
-* **Source:** `examples/data/wp-content/mu-plugins/wp-post-duplicator.php.example`
+* **Source:** `mu-plugins/sbs-platform/wp-post-duplicator/` (entrypoint: `wp-post-duplicator.php`)
+* **Activation:** `WP_ENABLED_MU_PLUGINS=post-duplicator`
 
 ## Overview
 

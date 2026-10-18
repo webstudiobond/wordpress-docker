@@ -1,7 +1,8 @@
 # UNIX Socket Mail Dispatcher
 
 * **Slug:** `notify`
-* **Source:** `examples/data/wp-content/mu-plugins/wp-notify.php.example`
+* **Source:** `mu-plugins/sbs-platform/wp-notify.php`
+* **Activation:** Enabled by default (or explicitly `WP_ENABLED_MU_PLUGINS=notify`)
 
 ## Overview
 

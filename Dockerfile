@@ -10,7 +10,7 @@ COPY go.mod ./
 RUN go mod download
 COPY cmd/ cmd/
 COPY internal/ internal/
-COPY examples/data/wp-content/mu-plugins/ /mu-plugins-src/
+COPY mu-plugins/ /mu-plugins-src/
 COPY --from=wordpress-donor /usr/src/wordpress /usr/src/wordpress
 
 ARG TARGETOS
@@ -18,16 +18,12 @@ ARG TARGETARCH
 
 RUN set -eux; \
     CGO_ENABLED=0 go build -ldflags="-s -w" -trimpath -o /bin/wp-guard-host ./cmd/wp-guard; \
-    mkdir -p /mu-plugins; \
-    for f in /mu-plugins-src/wp-*.php.example; do \
-        [ -f "$f" ] || continue; \
-        base=$(basename "$f" .example); \
-        cp "$f" "/mu-plugins/$base"; \
-    done; \
-    chmod 0755 /mu-plugins; \
-    chmod 0644 /mu-plugins/*.php; \
-    /bin/wp-guard-host manifest generate --source /usr/src/wordpress --mu-dir /mu-plugins --output /core-manifest.json; \
-    chmod 0644 /core-manifest.json; \
+    mkdir -p /usr/local/share/wordpress/mu-plugins; \
+    cp -a /mu-plugins-src/sbs-platform/. /usr/local/share/wordpress/mu-plugins/; \
+    cp /mu-plugins-src/sbs-loader.php /usr/local/share/wordpress/sbs-loader.php; \
+    /bin/wp-guard-host manifest generate; \
+    find /usr/local/share/wordpress -type d -exec chmod 0555 {} +; \
+    find /usr/local/share/wordpress -type f -exec chmod 0444 {} +; \
     CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} go build \
         -ldflags="-s -w" \
         -trimpath \
@@ -108,7 +104,7 @@ RUN set -eux; \
         /usr/share/doc \
         /usr/share/info
 
-COPY --from=wp-guard-builder --chmod=0755 /bin/wp-guard /usr/local/bin/wp-guard
+COPY --from=wp-guard-builder --chmod=0555 /bin/wp-guard /usr/local/bin/wp-guard
 
 WORKDIR /var/www/html
 
@@ -119,23 +115,24 @@ HEALTHCHECK NONE
 # hadolint ignore=DL3008
 RUN apt-get update && apt-get install -y --no-install-recommends git mariadb-client less && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-COPY --from=wpcli-donor --chmod=0755 /usr/local/bin/wp /usr/local/bin/wp
+COPY --from=wpcli-donor --chmod=0555 /usr/local/bin/wp /usr/local/bin/wp
 
 ENTRYPOINT ["wp"]
 
 FROM base AS fpm
 
 COPY --from=wordpress-donor /usr/src/wordpress /usr/src/wordpress
-COPY --from=wp-guard-builder --chmod=0644 /core-manifest.json /usr/local/share/wordpress/core-manifest.json
-COPY --from=wp-guard-builder /mu-plugins /usr/local/share/wordpress/mu-plugins
+COPY --from=wp-guard-builder /usr/local/share/wordpress /usr/local/share/wordpress
 
-RUN chmod 0755 /usr/local/share/wordpress /usr/local/share/wordpress/mu-plugins && \
-    chmod 0644 /usr/local/share/wordpress/core-manifest.json /usr/local/share/wordpress/mu-plugins/*.php && \
+RUN find /usr/local/share/wordpress -type d -exec chmod 0555 {} + && \
+    find /usr/local/share/wordpress -type f -exec chmod 0444 {} + && \
+    find /usr/src/wordpress -type d -exec chmod 0555 {} + && \
+    find /usr/src/wordpress -type f -exec chmod 0444 {} + && \
     rm -f /bin/sh /bin/dash /bin/bash /usr/bin/sh /usr/bin/dash /usr/bin/bash
 
 STOPSIGNAL SIGQUIT
 
 HEALTHCHECK --interval=10s --timeout=3s --start-period=5s --retries=3 \
-    CMD ["/usr/bin/env", "SCRIPT_NAME=/ping", "SCRIPT_FILENAME=/ping", "REQUEST_METHOD=GET", "cgi-fcgi", "-bind", "-connect", "/var/run/sockets/php/php-fpm.sock"]
+    CMD ["/usr/bin/env", "-i", "SCRIPT_NAME=/ping", "SCRIPT_FILENAME=/ping", "REQUEST_METHOD=GET", "cgi-fcgi", "-bind", "-connect", "/var/run/sockets/php/php-fpm.sock"]
 
 ENTRYPOINT ["php-fpm", "-F"]

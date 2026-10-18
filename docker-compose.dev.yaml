@@ -159,6 +159,12 @@ services:
       - ./config/php/opcache.ini:/etc/php/${PHP_VERSION:-8.5}/fpm/conf.d/10-opcache.ini:ro
       - ./config/php/www.conf:/etc/php/${PHP_VERSION:-8.5}/fpm/pool.d/www.conf:ro
       - /etc/localtime:/etc/localtime:ro
+    healthcheck:
+      test: ["CMD", "/usr/bin/env", "-i", "SCRIPT_NAME=/ping", "SCRIPT_FILENAME=/ping", "REQUEST_METHOD=GET", "cgi-fcgi", "-bind", "-connect", "/var/run/sockets/php/php-fpm.sock"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
     depends_on:
       init:
         condition: service_completed_successfully

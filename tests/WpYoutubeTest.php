@@ -9,7 +9,7 @@ use PHPUnit\Framework\Attributes\DependsExternal;
 use PHPUnit\Framework\Attributes\PreserveGlobalState;
 use PHPUnit\Framework\Attributes\RunInSeparateProcess;
 use PHPUnit\Framework\TestCase;
-use WpYoutube;
+use WordPressDocker\Youtube\WpYoutube;
 
 final class WpYoutubeTest extends TestCase
 {
@@ -261,7 +261,7 @@ final class WpYoutubeTest extends TestCase
         $GLOBALS['test_registered_shortcodes'] = [];
         $GLOBALS['test_registered_filters'] = [];
 
-        require_once __DIR__ . '/../examples/data/wp-content/mu-plugins/wp-youtube.php.example';
+        require_once __DIR__ . '/../mu-plugins/sbs-platform/wp-youtube.php';
 
         $this->assertSame([], $GLOBALS['test_registered_shortcodes']);
         $this->assertArrayHasKey('embed_oembed_html', $GLOBALS['test_registered_filters']);

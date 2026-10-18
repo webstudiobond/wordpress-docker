@@ -2,19 +2,8 @@ parameters:
     level: 9
     paths:
         - examples/data/wp-config.php.example
-        - examples/data/wp-content/mu-plugins/wp-notify.php.example
-        - examples/data/wp-content/mu-plugins/wp-performance.php.example
-        - examples/data/wp-content/mu-plugins/wp-translation-updates-disabler.php.example
-        - examples/data/wp-content/mu-plugins/wp-acf-editor-control.php.example
-        - examples/data/wp-content/mu-plugins/wp-telemetry-blocker.php.example
-        - examples/data/wp-content/mu-plugins/wp-post-duplicator.php.example
-        - examples/data/wp-content/mu-plugins/wp-core-cleanup.php.example
-        - examples/data/wp-content/mu-plugins/wp-transliterator.php.example
-        - examples/data/wp-content/mu-plugins/wp-youtube.php.example
-        - examples/data/wp-content/mu-plugins/wp-reading-time.php.example
-        - examples/data/wp-content/mu-plugins/wp-snippets.php.example
-        - examples/data/wp-content/mu-plugins/wp-admin-control.php.example
-        - examples/data/wp-content/mu-plugins/sbs-loader.php.example
+        - mu-plugins/sbs-loader.php
+        - mu-plugins/sbs-platform
     scanFiles:
         - stubs/WP_Error.php
 

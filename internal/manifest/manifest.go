@@ -30,6 +30,7 @@ type Manifest struct {
 	CoreFiles        map[string]string `json:"core_files"`
 	MuPlugins        map[string]string `json:"mu_plugins"`
 	WordPressVersion string            `json:"wordpress_version"`
+	SbsLoaderHash    string            `json:"sbs_loader_hash,omitempty"`
 }
 
 // ComputeFileHash calculates the hex-encoded SHA-256 hash of a regular file on disk using streaming I/O.
@@ -214,8 +215,9 @@ var (
 	removeFn           = defaultRemove
 )
 
-// Generate constructs a new Manifest by hashing all files in the donor and mu-plugin directories.
-func Generate(ctx context.Context, donorDir, muDir string) (*Manifest, error) {
+// Generate constructs a new Manifest by hashing all files in the donor and mu-plugin directories,
+// and optionally computing the integrity hash for the canonical sbs-loader.php file.
+func Generate(ctx context.Context, donorDir, muDir, sbsLoaderPath string) (*Manifest, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, fmt.Errorf("manifest generation context cancelled: %w", err)
 	}
@@ -240,10 +242,20 @@ func Generate(ctx context.Context, donorDir, muDir string) (*Manifest, error) {
 		return nil, err
 	}
 
+	var sbsLoaderHash string
+	if sbsLoaderPath != "" {
+		hash, hashErr := ComputeFileHash(sbsLoaderPath)
+		if hashErr != nil {
+			return nil, fmt.Errorf("failed computing sbs-loader hash: %w", hashErr)
+		}
+		sbsLoaderHash = hash
+	}
+
 	return &Manifest{
 		CoreFiles:        coreFiles,
 		MuPlugins:        muPlugins,
 		WordPressVersion: version,
+		SbsLoaderHash:    sbsLoaderHash,
 	}, nil
 }
 

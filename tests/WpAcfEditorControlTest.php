@@ -10,7 +10,7 @@ use PHPUnit\Framework\Attributes\PreserveGlobalState;
 use PHPUnit\Framework\Attributes\RunInSeparateProcess;
 use PHPUnit\Framework\TestCase;
 use stdClass;
-use WpAcfEditorControl;
+use WordPressDocker\AcfEditorControl\WpAcfEditorControl;
 
 final class WpAcfEditorControlTest extends TestCase
 {
@@ -746,7 +746,7 @@ final class WpAcfEditorControlTest extends TestCase
         $GLOBALS['test_registered_actions'] = [];
         $GLOBALS['test_registered_filters'] = [];
 
-        require_once __DIR__ . '/../examples/data/wp-content/mu-plugins/wp-acf-editor-control.php.example';
+        require_once __DIR__ . '/../mu-plugins/sbs-platform/wp-acf-editor-control.php';
 
         $this->assertArrayHasKey('acf/update_field_group', $GLOBALS['test_registered_actions']);
         $this->assertArrayHasKey('acf/delete_field_group', $GLOBALS['test_registered_actions']);

@@ -59,16 +59,22 @@ func createTestDonor(t *testing.T, version string) string {
 	return dir
 }
 
-func createTestSbsLoader(t *testing.T, targetDir, contentDirName string) {
+func createTestSbsLoader(t *testing.T, targetDir, contentDirName string) string {
 	t.Helper()
 	muDir := filepath.Join(targetDir, contentDirName, "mu-plugins")
 	if err := os.MkdirAll(muDir, 0o750); err != nil {
 		t.Fatalf("failed creating muDir: %v", err)
 	}
 	loaderPath := filepath.Join(muDir, "sbs-loader.php")
-	if err := os.WriteFile(loaderPath, []byte(DefaultSbsLoaderTemplate), 0o600); err != nil {
+	data := []byte("<?php // sbs-loader canonical test fixture\n")
+	if err := os.WriteFile(loaderPath, data, 0o600); err != nil {
 		t.Fatalf("failed creating test loader: %v", err)
 	}
+	hash, err := manifest.ComputeFileHash(loaderPath)
+	if err != nil {
+		t.Fatalf("failed computing test loader hash: %v", err)
+	}
+	return hash
 }
 
 func TestResolveContentDir(t *testing.T) {
@@ -408,34 +414,41 @@ func TestSyncRootFiles(t *testing.T) {
 }
 
 func TestVerifySbsLoader_Integrity(t *testing.T) {
-	t.Run("missing loader returns descriptive error", func(t *testing.T) {
+	t.Run("missing loader is allowed when mu-plugins unused", func(t *testing.T) {
 		tmpDir := t.TempDir()
-		err := VerifySbsLoader(tmpDir, "wp-content")
-		expectedPrompt := fmt.Sprintf("0:%d 0640", os.Getgid())
-		if err == nil || !strings.Contains(err.Error(), "sbs-loader.php is missing") || !strings.Contains(err.Error(), expectedPrompt) {
-			t.Fatalf("expected missing error containing %s, got %v", expectedPrompt, err)
+		if err := VerifySbsLoader(tmpDir, "wp-content", "expected_hash"); err != nil {
+			t.Fatalf("expected missing loader to be allowed, got %v", err)
 		}
 	})
 
 	t.Run("valid canonical loader succeeds", func(t *testing.T) {
 		tmpDir := t.TempDir()
-		createTestSbsLoader(t, tmpDir, "wp-content")
-		if err := VerifySbsLoader(tmpDir, "wp-content"); err != nil {
+		expectedHash := createTestSbsLoader(t, tmpDir, "wp-content")
+		if err := VerifySbsLoader(tmpDir, "wp-content", expectedHash); err != nil {
 			t.Fatalf("expected valid loader to succeed, got %v", err)
 		}
 	})
 
 	t.Run("tampered loader returns integrity mismatch", func(t *testing.T) {
 		tmpDir := t.TempDir()
-		createTestSbsLoader(t, tmpDir, "wp-content")
+		expectedHash := createTestSbsLoader(t, tmpDir, "wp-content")
 		loaderPath := filepath.Join(tmpDir, "wp-content", "mu-plugins", "sbs-loader.php")
 		if err := os.WriteFile(loaderPath, []byte("<?php // tampered"), 0o600); err != nil {
 			t.Fatalf("failed tampering loader: %v", err)
 		}
 
-		err := VerifySbsLoader(tmpDir, "wp-content")
+		err := VerifySbsLoader(tmpDir, "wp-content", expectedHash)
 		if err == nil || !strings.Contains(err.Error(), "integrity mismatch") {
 			t.Fatalf("expected integrity mismatch error, got %v", err)
+		}
+	})
+
+	t.Run("empty expected hash returns error", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		createTestSbsLoader(t, tmpDir, "wp-content")
+		err := VerifySbsLoader(tmpDir, "wp-content", "")
+		if err == nil || !strings.Contains(err.Error(), "expected sbs-loader hash cannot be empty") {
+			t.Fatalf("expected empty hash error, got %v", err)
 		}
 	})
 }
@@ -448,7 +461,7 @@ func TestVerifySbsLoader_ModeErrors(t *testing.T) {
 			t.Fatalf("failed creating dir: %v", err)
 		}
 
-		err := VerifySbsLoader(tmpDir, "wp-content")
+		err := VerifySbsLoader(tmpDir, "wp-content", "expected_hash")
 		if err == nil || !strings.Contains(err.Error(), "not a regular file") {
 			t.Fatalf("expected not regular file error, got %v", err)
 		}
@@ -457,7 +470,7 @@ func TestVerifySbsLoader_ModeErrors(t *testing.T) {
 	t.Run("symlink returns not regular file error", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		realFile := filepath.Join(tmpDir, "real_loader.php")
-		if err := os.WriteFile(realFile, []byte(DefaultSbsLoaderTemplate), 0o600); err != nil {
+		if err := os.WriteFile(realFile, []byte("<?php // real"), 0o600); err != nil {
 			t.Fatalf("failed writing real file: %v", err)
 		}
 		muDir := filepath.Join(tmpDir, "wp-content", "mu-plugins")
@@ -469,7 +482,7 @@ func TestVerifySbsLoader_ModeErrors(t *testing.T) {
 			t.Fatalf("failed creating symlink: %v", err)
 		}
 
-		err := VerifySbsLoader(tmpDir, "wp-content")
+		err := VerifySbsLoader(tmpDir, "wp-content", "expected_hash")
 		if err == nil || !strings.Contains(err.Error(), "not a regular file") {
 			t.Fatalf("expected symlink rejection error, got %v", err)
 		}
@@ -479,7 +492,7 @@ func TestVerifySbsLoader_ModeErrors(t *testing.T) {
 func TestVerifySbsLoader_IOPermissionErrors(t *testing.T) {
 	t.Run("unreadable file returns error during hash computation", func(t *testing.T) {
 		tmpDir := t.TempDir()
-		createTestSbsLoader(t, tmpDir, "wp-content")
+		expectedHash := createTestSbsLoader(t, tmpDir, "wp-content")
 		loaderPath := filepath.Join(tmpDir, "wp-content", "mu-plugins", "sbs-loader.php")
 		if err := os.Chmod(loaderPath, 0o000); err != nil {
 			t.Fatalf("failed chmod: %v", err)
@@ -490,7 +503,7 @@ func TestVerifySbsLoader_IOPermissionErrors(t *testing.T) {
 			}
 		})
 
-		err := VerifySbsLoader(tmpDir, "wp-content")
+		err := VerifySbsLoader(tmpDir, "wp-content", expectedHash)
 		if err == nil {
 			t.Fatalf("expected error on unreadable file")
 		}
@@ -508,7 +521,7 @@ func TestVerifySbsLoader_IOPermissionErrors(t *testing.T) {
 			}
 		})
 
-		err := VerifySbsLoader(forbiddenDir, "wp-content")
+		err := VerifySbsLoader(forbiddenDir, "wp-content", "expected_hash")
 		if err == nil {
 			t.Fatalf("expected error when parent directory cannot be traversed")
 		}
@@ -524,7 +537,7 @@ func TestVerifyAndRepairCore_Intact(t *testing.T) {
 		t.Fatalf("setup copy failed: %v", err)
 	}
 
-	m, err := manifest.Generate(ctx, donorDir, "")
+	m, err := manifest.Generate(ctx, donorDir, "", "")
 	if err != nil {
 		t.Fatalf("manifest generate failed: %v", err)
 	}
@@ -555,7 +568,7 @@ func TestVerifyAndRepairCore_UserFilePreserved(t *testing.T) {
 		t.Fatalf("setup copy failed: %v", err)
 	}
 
-	m, err := manifest.Generate(ctx, donorDir, "")
+	m, err := manifest.Generate(ctx, donorDir, "", "")
 	if err != nil {
 		t.Fatalf("manifest generate failed: %v", err)
 	}
@@ -715,7 +728,7 @@ func TestVerifyAndRepairCore_CompromisedScenarios(t *testing.T) {
 				t.Fatalf("setup copy failed: %v", err)
 			}
 
-			m, err := manifest.Generate(ctx, donorDir, "")
+			m, err := manifest.Generate(ctx, donorDir, "", "")
 			if err != nil {
 				t.Fatalf("manifest generate failed: %v", err)
 			}
@@ -831,7 +844,7 @@ func TestRunUpToDateWithManifest(t *testing.T) {
 	createTestSbsLoader(t, targetDir, "wp-content")
 	manifestPath := filepath.Join(t.TempDir(), "core-manifest.json")
 
-	m, genErr := manifest.Generate(ctx, donorDir, "")
+	m, genErr := manifest.Generate(ctx, donorDir, "", "")
 	if genErr != nil {
 		t.Fatalf("manifest generate failed: %v", genErr)
 	}
@@ -1366,7 +1379,7 @@ func TestVerifyAndRepairCoreFailures(t *testing.T) {
 		t.Fatalf("setup copy failed: %v", err)
 	}
 
-	m, err := manifest.Generate(ctx, donorDir, "")
+	m, err := manifest.Generate(ctx, donorDir, "", "")
 	if err != nil {
 		t.Fatalf("manifest generate failed: %v", err)
 	}
@@ -1460,7 +1473,7 @@ func mockFailingSyncCustomContent(_ context.Context, _, _ string) error {
 	return errors.New("simulated sync custom content error")
 }
 
-func mockFailingVerifyLoader(_, _ string) error {
+func mockFailingVerifyLoader(_ context.Context, _ *Config, _ string) error {
 	return errors.New("simulated verify loader error")
 }
 
@@ -1735,7 +1748,7 @@ func TestVerifyAndRepairCoreCancelledDuringAudit(t *testing.T) {
 	if err := CopyDirRecursive(context.Background(), donorDir, targetDir); err != nil {
 		t.Fatalf("setup copy failed: %v", err)
 	}
-	m, err := manifest.Generate(context.Background(), donorDir, "")
+	m, err := manifest.Generate(context.Background(), donorDir, "", "")
 	if err != nil {
 		t.Fatalf("manifest generate failed: %v", err)
 	}
@@ -2331,7 +2344,7 @@ func TestVerifyAndRepairCoreErrorBranches(t *testing.T) {
 	if err := CopyDirRecursive(context.Background(), donorDir, targetDir); err != nil {
 		t.Fatalf("setup copy failed: %v", err)
 	}
-	m, err := manifest.Generate(context.Background(), donorDir, "")
+	m, err := manifest.Generate(context.Background(), donorDir, "", "")
 	if err != nil {
 		t.Fatalf("manifest generate failed: %v", err)
 	}
@@ -2406,5 +2419,161 @@ func TestDefaultAdaptersCoverage(t *testing.T) {
 
 	if _, err := defaultMkdirTemp("/dev/null/forbidden", "test_*"); err == nil {
 		t.Fatalf("expected error from defaultMkdirTemp on invalid path")
+	}
+}
+
+func TestDefaultVerifySbsLoader(t *testing.T) {
+	ctx := context.Background()
+	tempDir := t.TempDir()
+
+	validTarget := t.TempDir()
+	validHash := createTestSbsLoader(t, validTarget, "sbs-content")
+
+	validManifestPath := filepath.Join(tempDir, "valid-manifest.json")
+	validManifest := &manifest.Manifest{
+		WordPressVersion: "7.1.3",
+		SbsLoaderHash:    validHash,
+	}
+	if err := manifest.Save(validManifestPath, validManifest); err != nil {
+		t.Fatalf("failed saving valid manifest: %v", err)
+	}
+
+	emptyHashManifestPath := filepath.Join(tempDir, "empty-hash-manifest.json")
+	emptyHashManifest := &manifest.Manifest{
+		WordPressVersion: "7.1.3",
+	}
+	if err := manifest.Save(emptyHashManifestPath, emptyHashManifest); err != nil {
+		t.Fatalf("failed saving empty hash manifest: %v", err)
+	}
+
+	corruptManifestPath := filepath.Join(tempDir, "corrupt-manifest.json")
+	if err := os.WriteFile(corruptManifestPath, []byte("{invalid json"), 0o600); err != nil {
+		t.Fatalf("failed writing corrupt manifest: %v", err)
+	}
+
+	dirManifestPath := filepath.Join(tempDir, "dir-manifest")
+	if err := os.Mkdir(dirManifestPath, 0o750); err != nil {
+		t.Fatalf("failed creating dir manifest: %v", err)
+	}
+
+	symlinkManifestPath := filepath.Join(tempDir, "symlink-manifest.json")
+	if err := os.Symlink(validManifestPath, symlinkManifestPath); err != nil {
+		t.Fatalf("failed creating symlink manifest: %v", err)
+	}
+
+	tamperedTarget := t.TempDir()
+	createTestSbsLoader(t, tamperedTarget, "sbs-content")
+	tamperedLoader := filepath.Join(tamperedTarget, "sbs-content", "mu-plugins", "sbs-loader.php")
+	if err := os.WriteFile(tamperedLoader, []byte("<?php // tampered"), 0o600); err != nil {
+		t.Fatalf("failed tampering loader: %v", err)
+	}
+
+	missingLoaderTarget := t.TempDir()
+
+	forbiddenDir := filepath.Join(tempDir, "forbidden")
+	if err := os.Mkdir(forbiddenDir, 0o000); err != nil {
+		t.Fatalf("failed creating forbidden dir: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chmod(forbiddenDir, 0o600); err != nil && !os.IsNotExist(err) {
+			t.Logf("cleanup chmod error: %v", err)
+		}
+	})
+	unreadableManifestPath := filepath.Join(forbiddenDir, "unreadable.json")
+
+	tests := []struct {
+		cfg     *Config
+		name    string
+		wantErr bool
+	}{
+		{
+			name: "empty manifest path skips verification",
+			cfg: &Config{
+				ManifestPath: "",
+				TargetDir:    validTarget,
+			},
+			wantErr: false,
+		},
+		{
+			name: "nonexistent manifest path skips verification",
+			cfg: &Config{
+				ManifestPath: filepath.Join(tempDir, "nonexistent.json"),
+				TargetDir:    validTarget,
+			},
+			wantErr: false,
+		},
+		{
+			name: "directory manifest path skips verification",
+			cfg: &Config{
+				ManifestPath: dirManifestPath,
+				TargetDir:    validTarget,
+			},
+			wantErr: false,
+		},
+		{
+			name: "symlink manifest path skips verification",
+			cfg: &Config{
+				ManifestPath: symlinkManifestPath,
+				TargetDir:    validTarget,
+			},
+			wantErr: false,
+		},
+		{
+			name: "manifest with empty loader hash skips verification",
+			cfg: &Config{
+				ManifestPath: emptyHashManifestPath,
+				TargetDir:    validTarget,
+			},
+			wantErr: false,
+		},
+		{
+			name: "valid manifest with matching loader succeeds",
+			cfg: &Config{
+				ManifestPath: validManifestPath,
+				TargetDir:    validTarget,
+			},
+			wantErr: false,
+		},
+		{
+			name: "corrupt manifest returns error",
+			cfg: &Config{
+				ManifestPath: corruptManifestPath,
+				TargetDir:    validTarget,
+			},
+			wantErr: true,
+		},
+		{
+			name: "unreadable manifest path returns error",
+			cfg: &Config{
+				ManifestPath: unreadableManifestPath,
+				TargetDir:    validTarget,
+			},
+			wantErr: true,
+		},
+		{
+			name: "missing sbs-loader file is allowed when unused",
+			cfg: &Config{
+				ManifestPath: validManifestPath,
+				TargetDir:    missingLoaderTarget,
+			},
+			wantErr: false,
+		},
+		{
+			name: "tampered sbs-loader file returns integrity mismatch error",
+			cfg: &Config{
+				ManifestPath: validManifestPath,
+				TargetDir:    tamperedTarget,
+			},
+			wantErr: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := defaultVerifySbsLoader(ctx, tc.cfg, "sbs-content")
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("defaultVerifySbsLoader() error = %v, wantErr = %v", err, tc.wantErr)
+			}
+		})
 	}
 }

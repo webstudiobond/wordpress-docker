@@ -718,6 +718,13 @@ function ensure_admin_control_stubs(): void
         function remove_menu_page(string $menuSlug): void
         {
             $GLOBALS['test_removed_menu_pages'][] = $menuSlug;
+            if (isset($GLOBALS['menu']) && is_array($GLOBALS['menu'])) {
+                foreach ($GLOBALS['menu'] as $idx => $item) {
+                    if (is_array($item) && isset($item[2]) && $item[2] === $menuSlug) {
+                        unset($GLOBALS['menu'][$idx]);
+                    }
+                }
+            }
         }
     }
 
@@ -856,6 +863,78 @@ function ensure_admin_control_stubs(): void
                 return $meta[$key] ?? '';
             }
             return isset($meta[$key]) ? [$meta[$key]] : [];
+        }
+    }
+
+    if (!function_exists('remove_post_type_support')) {
+        function remove_post_type_support(string $postType, string $feature): void
+        {
+            $GLOBALS['test_removed_post_type_supports'][] = [$postType, $feature];
+        }
+    }
+
+    if (!function_exists('remove_all_actions')) {
+        function remove_all_actions(string $tag, int|false $priority = false): void
+        {
+            $GLOBALS['test_removed_all_actions'][] = [$tag, $priority];
+        }
+    }
+
+    if (!function_exists('get_post_types')) {
+        /**
+         * @return array<string, string>
+         */
+        function get_post_types(): array
+        {
+            /** @var array<string, string> $types */
+            $types = $GLOBALS['test_post_types'] ?? ['post' => 'post', 'page' => 'page'];
+            return $types;
+        }
+    }
+
+    if (!function_exists('esc_url')) {
+        function esc_url(string $url): string
+        {
+            return htmlspecialchars($url, ENT_QUOTES, 'UTF-8');
+        }
+    }
+
+    if (!function_exists('number_format_i18n')) {
+        function number_format_i18n(int|float $number, int $decimals = 0): string
+        {
+            return number_format((float) $number, $decimals);
+        }
+    }
+
+    if (!function_exists('_nx')) {
+        function _nx(
+            string $single,
+            string $plural,
+            int|float $number,
+            string $context,
+            string $domain = 'default'
+        ): string {
+            return $number === 1 ? $single : $plural;
+        }
+    }
+
+    if (!function_exists('get_posts')) {
+        /**
+         * @param array<string, mixed> $args
+         * @return list<object>
+         */
+        function get_posts(array $args): array
+        {
+            $posts = $GLOBALS['test_get_posts'] ?? [];
+            return is_array($posts) ? array_values($posts) : [];
+        }
+    }
+
+    if (!function_exists('get_page_by_path')) {
+        function get_page_by_path(string $pagePath, string $output = 'OBJECT', mixed $postType = 'page'): ?object
+        {
+            $page = $GLOBALS['test_page_by_path'][$pagePath] ?? null;
+            return is_object($page) ? $page : null;
         }
     }
 }

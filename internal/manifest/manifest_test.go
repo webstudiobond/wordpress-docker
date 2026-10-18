@@ -150,7 +150,7 @@ func TestGenerate(t *testing.T) {
 	donorDir, muDir := createTestDonorFixture(t)
 	ctx := context.Background()
 
-	m, err := Generate(ctx, donorDir, muDir)
+	m, err := Generate(ctx, donorDir, muDir, "")
 	if err != nil {
 		t.Fatalf("Generate() unexpected error: %v", err)
 	}
@@ -212,11 +212,18 @@ func TestSaveAndLoad(t *testing.T) {
 	t.Parallel()
 
 	donorDir, muDir := createTestDonorFixture(t)
+	loaderFile := filepath.Join(t.TempDir(), "sbs-loader.php")
+	if err := os.WriteFile(loaderFile, []byte("<?php // sbs loader test"), 0o600); err != nil {
+		t.Fatalf("failed writing test loader: %v", err)
+	}
 	ctx := context.Background()
 
-	m, err := Generate(ctx, donorDir, muDir)
+	m, err := Generate(ctx, donorDir, muDir, loaderFile)
 	if err != nil {
 		t.Fatalf("Generate() unexpected error: %v", err)
+	}
+	if m.SbsLoaderHash == "" {
+		t.Fatalf("expected non-empty SbsLoaderHash")
 	}
 
 	manifestPath := filepath.Join(t.TempDir(), "sub", "core-manifest.json")
@@ -238,6 +245,9 @@ func TestSaveAndLoad(t *testing.T) {
 	if len(loaded.MuPlugins) != len(m.MuPlugins) {
 		t.Errorf("loaded.MuPlugins count = %d, want %d", len(loaded.MuPlugins), len(m.MuPlugins))
 	}
+	if loaded.SbsLoaderHash != m.SbsLoaderHash {
+		t.Errorf("loaded.SbsLoaderHash = %q, want %q", loaded.SbsLoaderHash, m.SbsLoaderHash)
+	}
 }
 
 func TestGenerateErrors(t *testing.T) {
@@ -246,30 +256,49 @@ func TestGenerateErrors(t *testing.T) {
 	canceledCtx, cancel := context.WithCancel(context.Background())
 	cancel()
 
+	validDonor, validMu := createTestDonorFixture(t)
+
 	tests := []struct {
-		ctx      context.Context
-		name     string
-		donorDir string
-		muDir    string
+		ctx           context.Context
+		name          string
+		donorDir      string
+		muDir         string
+		sbsLoaderPath string
 	}{
 		{
-			name:     "canceled context",
-			ctx:      canceledCtx,
-			donorDir: t.TempDir(),
-			muDir:    t.TempDir(),
+			name:          "canceled context",
+			ctx:           canceledCtx,
+			donorDir:      t.TempDir(),
+			muDir:         t.TempDir(),
+			sbsLoaderPath: "",
 		},
 		{
-			name:     "missing version file in donor",
-			ctx:      context.Background(),
-			donorDir: t.TempDir(),
-			muDir:    t.TempDir(),
+			name:          "missing version file in donor",
+			ctx:           context.Background(),
+			donorDir:      t.TempDir(),
+			muDir:         t.TempDir(),
+			sbsLoaderPath: "",
+		},
+		{
+			name:          "nonexistent sbs loader file",
+			ctx:           context.Background(),
+			donorDir:      validDonor,
+			muDir:         validMu,
+			sbsLoaderPath: filepath.Join(t.TempDir(), "nonexistent.php"),
+		},
+		{
+			name:          "directory instead of regular file for sbs loader",
+			ctx:           context.Background(),
+			donorDir:      validDonor,
+			muDir:         validMu,
+			sbsLoaderPath: t.TempDir(),
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			_, err := Generate(tt.ctx, tt.donorDir, tt.muDir)
+			_, err := Generate(tt.ctx, tt.donorDir, tt.muDir, tt.sbsLoaderPath)
 			if err == nil {
 				t.Fatalf("Generate() expected error for case %s, got nil", tt.name)
 			}
@@ -418,21 +447,21 @@ func TestGenerateMockErrors(t *testing.T) {
 	ctx := context.Background()
 
 	scanCoreFilesFn = mockScanCoreFilesError
-	_, err := Generate(ctx, donorDir, muDir)
+	_, err := Generate(ctx, donorDir, muDir, "")
 	scanCoreFilesFn = defaultScanCoreFiles
 	if err == nil {
 		t.Fatalf("expected error from mockScanCoreFilesError")
 	}
 
 	scanCoreFilesFn = mockScanCoreFilesEmpty
-	_, errEmpty := Generate(ctx, donorDir, muDir)
+	_, errEmpty := Generate(ctx, donorDir, muDir, "")
 	scanCoreFilesFn = defaultScanCoreFiles
 	if !errors.Is(errEmpty, ErrEmptyDonorDir) {
 		t.Fatalf("expected ErrEmptyDonorDir, got %v", errEmpty)
 	}
 
 	scanMuPluginsFn = mockScanMuPluginsError
-	_, errMu := Generate(ctx, donorDir, muDir)
+	_, errMu := Generate(ctx, donorDir, muDir, "")
 	scanMuPluginsFn = defaultScanMuPlugins
 	if errMu == nil {
 		t.Fatalf("expected error from mockScanMuPluginsError")

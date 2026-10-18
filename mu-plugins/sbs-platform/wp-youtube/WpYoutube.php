@@ -1,0 +1,335 @@
+<?php
+
+declare(strict_types=1);
+
+namespace WordPressDocker\Youtube;
+
+/**
+ * Registers cached YouTube channel statistics shortcodes ([ytv], [yts], [ytc])
+ * and normalizes YouTube oEmbed iframe player parameters.
+ */
+final class WpYoutube
+{
+    private const string DEFAULT_OEMBED_PARAMS = 'rel=0&playsinline=1&iv_load_policy=3';
+    private const int MIN_CACHE_TTL = 60;
+    private const int VIEW_COUNT_TTL = 14400;
+    private const int SUBSCRIBER_COUNT_TTL = 345600;
+    private const int VIDEO_COUNT_TTL = 259200;
+
+    /**
+     * @param (callable(string): (string|false))|null $envGetter
+     * @param (callable(string): string)|null $secretGetter
+     * @param (callable(string): mixed)|null $transientGetter
+     * @param (callable(string, string, int): bool)|null $transientSetter
+     * @param (callable(string, int): (string|false))|null $httpGetter
+     * @param (callable(string, callable): void)|null $shortcodeAdder
+     * @param (callable(string, callable, int, int): void)|null $filterAdder
+     */
+    public function __construct(
+        private readonly mixed $envGetter = null,
+        private readonly mixed $secretGetter = null,
+        private readonly mixed $transientGetter = null,
+        private readonly mixed $transientSetter = null,
+        private readonly mixed $httpGetter = null,
+        private readonly mixed $shortcodeAdder = null,
+        private readonly mixed $filterAdder = null
+    ) {
+    }
+
+    public function isShortcodesEnabled(): bool
+    {
+        $raw = $this->getEnv('WP_YOUTUBE_SHORTCODES');
+        if ($raw === false || \trim($raw) === '') {
+            return false;
+        }
+
+        return \in_array(\strtolower(\trim($raw)), ['true', '1', 'on', 'yes'], true);
+    }
+
+    public function isOembedCleanupEnabled(): bool
+    {
+        return $this->isEnvEnabled('WP_YOUTUBE_OEMBED_CLEANUP');
+    }
+
+    public function isNocookieEnabled(): bool
+    {
+        return $this->isEnvEnabled('WP_YOUTUBE_NOCOOKIE');
+    }
+
+    public function getOembedParams(): string
+    {
+        $raw = $this->getEnv('WP_YOUTUBE_OEMBED_PARAMS');
+        if ($raw === false || \trim($raw) === '') {
+            return self::DEFAULT_OEMBED_PARAMS;
+        }
+
+        $cleaned = (string) \preg_replace('/[\s\x00-\x1F\x7F<>"\'`\\\\]/', '', \ltrim(\trim($raw), '?&'));
+
+        return $cleaned !== '' ? $cleaned : self::DEFAULT_OEMBED_PARAMS;
+    }
+
+    public function getDefaultApiKey(): string
+    {
+        $secret = $this->getSecret('wp_youtube_api_key');
+        if ($secret !== '') {
+            return $secret;
+        }
+
+        $env = $this->getEnv('WP_YOUTUBE_API_KEY');
+        if ($env !== false && \trim($env) !== '') {
+            return \trim($env);
+        }
+
+        return '';
+    }
+
+    public function getDefaultChannelId(): string
+    {
+        $secret = $this->getSecret('wp_youtube_channel_id');
+        if ($secret !== '') {
+            return $secret;
+        }
+
+        $env = $this->getEnv('WP_YOUTUBE_CHANNEL_ID');
+        if ($env !== false && \trim($env) !== '') {
+            return \trim($env);
+        }
+
+        return '';
+    }
+
+    public function renderViewCountShortcode(mixed $atts = []): string
+    {
+        return $this->fetchChannelStatistic($atts, 'viewCount', 'ytv_', self::VIEW_COUNT_TTL);
+    }
+
+    public function renderSubscriberCountShortcode(mixed $atts = []): string
+    {
+        return $this->fetchChannelStatistic($atts, 'subscriberCount', 'yts_', self::SUBSCRIBER_COUNT_TTL);
+    }
+
+    public function renderVideoCountShortcode(mixed $atts = []): string
+    {
+        return $this->fetchChannelStatistic($atts, 'videoCount', 'ytc_', self::VIDEO_COUNT_TTL);
+    }
+
+    public function filterOembedHtml(mixed $cache): string
+    {
+        $html = \is_scalar($cache) ? (string) $cache : '';
+        if (!$this->isOembedCleanupEnabled() || $html === '') {
+            return $html;
+        }
+
+        if (\str_contains($html, 'youtube.com/embed/') || \str_contains($html, 'youtube-nocookie.com/embed/')) {
+            if ($this->isNocookieEnabled()) {
+                $html = \str_replace(
+                    ['//www.youtube.com/embed/', '//youtube.com/embed/'],
+                    '//www.youtube-nocookie.com/embed/',
+                    $html
+                );
+            }
+
+            $params = $this->getOembedParams();
+            $html = \str_replace('?feature=oembed', '?' . $params, $html);
+        }
+
+        return $html;
+    }
+
+    public function registerHooks(): void
+    {
+        if ($this->isShortcodesEnabled()) {
+            $this->addShortcode('ytv', [$this, 'renderViewCountShortcode']);
+            $this->addShortcode('yts', [$this, 'renderSubscriberCountShortcode']);
+            $this->addShortcode('ytc', [$this, 'renderVideoCountShortcode']);
+        }
+
+        if ($this->isOembedCleanupEnabled()) {
+            $this->addFilter('embed_oembed_html', [$this, 'filterOembedHtml'], 10, 1);
+        }
+    }
+
+    private function fetchChannelStatistic(
+        mixed $atts,
+        string $statField,
+        string $transientPrefix,
+        int $defaultCacheTtl
+    ): string {
+        $attributes = \is_array($atts) ? $atts : [];
+
+        $rawApiKey = isset($attributes['apikey']) && \is_scalar($attributes['apikey'])
+            ? \trim((string) $attributes['apikey'])
+            : '';
+        $apiKey = ($rawApiKey !== '' && $rawApiKey !== 'AIza')
+            ? $rawApiKey
+            : $this->getDefaultApiKey();
+
+        $rawChannel = isset($attributes['channel']) && \is_scalar($attributes['channel'])
+            ? \trim((string) $attributes['channel'])
+            : '';
+        $channel = ($rawChannel !== '' && $rawChannel !== 'UCg' && $rawChannel !== 'UCgJ')
+            ? $rawChannel
+            : $this->getDefaultChannelId();
+
+        if (
+            \preg_match('/^[a-zA-Z0-9_-]+$/', $apiKey) !== 1
+            || \preg_match('/^[a-zA-Z0-9_-]+$/', $channel) !== 1
+        ) {
+            return '';
+        }
+
+        $formatNumber = !isset($attributes['n'])
+            || !\is_scalar($attributes['n'])
+            || !\in_array((string) $attributes['n'], ['0', 'false', 'off', 'no'], true);
+
+        $cacheTtl = isset($attributes['cache']) && \is_numeric($attributes['cache']) && (int) $attributes['cache'] > 0
+            ? \max(self::MIN_CACHE_TTL, (int) $attributes['cache'])
+            : $defaultCacheTtl;
+
+        $transientKey = $transientPrefix . \md5(
+            $apiKey . '|' . $channel . '|' . ($formatNumber ? '1' : '0') . '|' . (string) $cacheTtl
+        );
+
+        $cachedResult = $this->getTransient($transientKey);
+        if (\is_string($cachedResult) && \preg_match('/^[0-9]+(?:&nbsp;[0-9]{3})*$/', $cachedResult) === 1) {
+            return $cachedResult;
+        }
+
+        $url = 'https://www.googleapis.com/youtube/v3/channels?part=statistics&id='
+            . \rawurlencode($channel)
+            . '&key='
+            . \rawurlencode($apiKey);
+
+        $body = $this->httpGet($url, 5);
+        if ($body === false || $body === '') {
+            return '';
+        }
+
+        $data = \json_decode($body, true);
+        if (
+            !\is_array($data)
+            || !isset($data['items'])
+            || !\is_array($data['items'])
+            || !isset($data['items'][0])
+            || !\is_array($data['items'][0])
+            || !isset($data['items'][0]['statistics'])
+            || !\is_array($data['items'][0]['statistics'])
+            || !isset($data['items'][0]['statistics'][$statField])
+            || !\is_scalar($data['items'][0]['statistics'][$statField])
+        ) {
+            return '';
+        }
+
+        $rawStat = \trim((string) $data['items'][0]['statistics'][$statField]);
+        if (!\ctype_digit($rawStat)) {
+            return '';
+        }
+
+        $value = $formatNumber
+            ? \str_replace(' ', '&nbsp;', \number_format((float) $rawStat, 0, ',', ' '))
+            : $rawStat;
+
+        $this->setTransient($transientKey, $value, $cacheTtl);
+
+        return $value;
+    }
+
+    private function isEnvEnabled(string $envName): bool
+    {
+        $raw = $this->getEnv($envName);
+        if ($raw === false || \trim($raw) === '') {
+            return true;
+        }
+
+        return !\in_array(\strtolower(\trim($raw)), ['false', '0', 'off', 'no'], true);
+    }
+
+    private function getEnv(string $name): string|false
+    {
+        if (\is_callable($this->envGetter)) {
+            return ($this->envGetter)($name);
+        }
+
+        return \getenv($name, true);
+    }
+
+    private function getSecret(string $secretName): string
+    {
+        if (\is_callable($this->secretGetter)) {
+            return \trim((string) ($this->secretGetter)($secretName));
+        }
+
+        if (\function_exists('get_docker_secret')) {
+            return \trim(get_docker_secret($secretName));
+        }
+
+        return '';
+    }
+
+    private function getTransient(string $key): mixed
+    {
+        if (\is_callable($this->transientGetter)) {
+            return ($this->transientGetter)($key);
+        }
+
+        if (\function_exists('get_transient')) {
+            return get_transient($key);
+        }
+
+        return false;
+    }
+
+    private function setTransient(string $key, string $value, int $expiration): void
+    {
+        if (\is_callable($this->transientSetter)) {
+            ($this->transientSetter)($key, $value, $expiration);
+            return;
+        }
+
+        if (\function_exists('set_transient')) {
+            set_transient($key, $value, $expiration);
+        }
+    }
+
+    private function httpGet(string $url, int $timeoutSeconds): string|false
+    {
+        if (\is_callable($this->httpGetter)) {
+            return ($this->httpGetter)($url, $timeoutSeconds);
+        }
+
+        if (!\function_exists('wp_remote_get') || !\function_exists('wp_remote_retrieve_body')) {
+            return false;
+        }
+
+        $response = wp_remote_get($url, ['timeout' => $timeoutSeconds]);
+        if (\function_exists('is_wp_error') && is_wp_error($response)) {
+            return false;
+        }
+
+        return (string) wp_remote_retrieve_body($response);
+    }
+
+    private function addShortcode(string $tag, callable $callback): void
+    {
+        if (\is_callable($this->shortcodeAdder)) {
+            ($this->shortcodeAdder)($tag, $callback);
+            return;
+        }
+
+        if (\function_exists('add_shortcode')) {
+            add_shortcode($tag, $callback);
+        }
+    }
+
+    private function addFilter(string $tag, callable $callback, int $priority, int $acceptedArgs): void
+    {
+        if (\is_callable($this->filterAdder)) {
+            ($this->filterAdder)($tag, $callback, $priority, $acceptedArgs);
+            return;
+        }
+
+        if (\function_exists('add_filter')) {
+            add_filter($tag, $callback, $priority, $acceptedArgs);
+        }
+    }
+}

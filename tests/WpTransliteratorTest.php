@@ -9,7 +9,7 @@ use PHPUnit\Framework\Attributes\DependsExternal;
 use PHPUnit\Framework\Attributes\PreserveGlobalState;
 use PHPUnit\Framework\Attributes\RunInSeparateProcess;
 use PHPUnit\Framework\TestCase;
-use WpTransliterator;
+use WordPressDocker\Transliterator\WpTransliterator;
 
 final class WpTransliteratorTest extends TestCase
 {
@@ -238,7 +238,7 @@ final class WpTransliteratorTest extends TestCase
         ensure_wordpress_filter_stubs();
         $GLOBALS['test_registered_filters'] = [];
 
-        require_once __DIR__ . '/../examples/data/wp-content/mu-plugins/wp-transliterator.php.example';
+        require_once __DIR__ . '/../mu-plugins/sbs-platform/wp-transliterator.php';
 
         $this->assertArrayHasKey('sanitize_title', $GLOBALS['test_registered_filters']);
         $this->assertArrayHasKey('sanitize_file_name', $GLOBALS['test_registered_filters']);

@@ -1,7 +1,8 @@
 # Translation Update Control
 
 * **Slug:** `translation-updates-disabler`
-* **Source:** `examples/data/wp-content/mu-plugins/wp-translation-updates-disabler.php.example`
+* **Source:** `mu-plugins/sbs-platform/wp-translation-updates-disabler/` (entrypoint: `wp-translation-updates-disabler.php`)
+* **Activation:** `WP_ENABLED_MU_PLUGINS=translation-updates-disabler`
 
 ## Overview
 

@@ -8,7 +8,7 @@ use PHPUnit\Framework\Attributes\Depends;
 use PHPUnit\Framework\Attributes\PreserveGlobalState;
 use PHPUnit\Framework\Attributes\RunInSeparateProcess;
 use PHPUnit\Framework\TestCase;
-use WpPerformance;
+use WordPressDocker\Performance\WpPerformance;
 
 final class WpPerformanceTest extends TestCase
 {
@@ -425,7 +425,7 @@ final class WpPerformanceTest extends TestCase
     {
         ensure_wordpress_stubs();
         $GLOBALS['test_registered_actions'] = [];
-        require_once __DIR__ . '/../examples/data/wp-content/mu-plugins/wp-performance.php.example';
+        require_once __DIR__ . '/../mu-plugins/sbs-platform/wp-performance.php';
 
         $this->assertArrayHasKey('http_api_curl', $GLOBALS['test_registered_actions']);
         $this->assertArrayHasKey('upgrader_process_complete', $GLOBALS['test_registered_actions']);

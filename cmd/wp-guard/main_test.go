@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/webstudiobond/wp-guard/internal/syncer"
+	"github.com/webstudiobond/wp-guard/internal/manifest"
 )
 
 var (
@@ -83,7 +83,7 @@ func TestRunCLI_Sync(t *testing.T) {
 	if err := os.MkdirAll(muDir, 0o750); err != nil {
 		t.Fatalf("failed creating muDir: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(muDir, "sbs-loader.php"), []byte(syncer.DefaultSbsLoaderTemplate), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(muDir, "sbs-loader.php"), []byte("<?php // sbs-loader"), 0o600); err != nil {
 		t.Fatalf("failed creating test loader: %v", err)
 	}
 
@@ -144,7 +144,7 @@ func TestRunCLI_DefaultSync(t *testing.T) {
 	if err := os.MkdirAll(muDir, 0o750); err != nil {
 		t.Fatalf("failed creating muDir: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(muDir, "sbs-loader.php"), []byte(syncer.DefaultSbsLoaderTemplate), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(muDir, "sbs-loader.php"), []byte("<?php // sbs-loader"), 0o600); err != nil {
 		t.Fatalf("failed creating test loader: %v", err)
 	}
 
@@ -166,33 +166,65 @@ func TestRunCLI_Manifest(t *testing.T) {
 	ctx := context.Background()
 	donorDir := createTestDonorDir(t, "6.6.4")
 	outPath := filepath.Join(t.TempDir(), "test-manifest.json")
+	loaderPath := filepath.Join(t.TempDir(), "sbs-loader.php")
+	if err := os.WriteFile(loaderPath, []byte("<?php // test loader"), 0o600); err != nil {
+		t.Fatalf("failed creating test loader: %v", err)
+	}
+	loaderOutPath := filepath.Join(t.TempDir(), "test-loader-manifest.json")
+	noSubcommandPath := filepath.Join(t.TempDir(), "test-no-subcommand-manifest.json")
 
 	tests := []struct {
-		name     string
-		source   string
-		output   string
-		extra    []string
-		wantCode int
+		name           string
+		donor          string
+		mu             string
+		loader         string
+		output         string
+		extraArgs      []string
+		wantCode       int
+		omitSubcommand bool
+		wantLoader     bool
 	}{
 		{
-			name:     "valid generate",
-			source:   donorDir,
+			name:       "valid generate without sbs loader",
+			donor:      donorDir,
+			loader:     "",
+			output:     outPath,
+			wantCode:   0,
+			wantLoader: false,
+		},
+		{
+			name:       "valid generate with sbs loader",
+			donor:      donorDir,
+			loader:     loaderPath,
+			output:     loaderOutPath,
+			wantCode:   0,
+			wantLoader: true,
+		},
+		{
+			name:           "valid generate without subcommand",
+			donor:          donorDir,
+			loader:         loaderPath,
+			output:         noSubcommandPath,
+			omitSubcommand: true,
+			wantCode:       0,
+			wantLoader:     true,
+		},
+		{
+			name:      "extra options return error",
+			donor:     donorDir,
+			output:    outPath,
+			extraArgs: []string{"--extra-flag"},
+			wantCode:  2,
+		},
+		{
+			name:     "missing donor returns error",
+			donor:    "/non/existent/donor",
 			output:   outPath,
-			wantCode: 0,
-		},
-		{
-			name:     "invalid flag",
-			extra:    []string{"--bad-flag"},
-			wantCode: 2,
-		},
-		{
-			name:     "missing donor",
-			source:   "/non/existent",
 			wantCode: 1,
 		},
 		{
-			name:     "invalid output path",
-			source:   donorDir,
+			name:     "invalid output path returns error",
+			donor:    donorDir,
 			output:   "/dev/null/manifest.json",
 			wantCode: 1,
 		},
@@ -200,23 +232,43 @@ func TestRunCLI_Manifest(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			var stdout, stderr bytes.Buffer
-			args := []string{"manifest", "generate"}
-			if tt.source != "" {
-				args = append(args, "--source", tt.source)
-			}
-			if tt.output != "" {
-				args = append(args, "--output", tt.output)
-			}
-			args = append(args, tt.extra...)
+			oldDonor := manifestDonorDir
+			oldMu := manifestMuDir
+			oldLoader := manifestSbsLoaderPath
+			oldOutput := manifestOutputPath
+			t.Cleanup(func() {
+				manifestDonorDir = oldDonor
+				manifestMuDir = oldMu
+				manifestSbsLoaderPath = oldLoader
+				manifestOutputPath = oldOutput
+			})
 
-			code := RunCLI(ctx, args, nil, &stdout, &stderr)
+			manifestDonorDir = tt.donor
+			manifestMuDir = tt.mu
+			manifestSbsLoaderPath = tt.loader
+			manifestOutputPath = tt.output
+
+			var stdout, stderr bytes.Buffer
+			cmdArgs := []string{"manifest"}
+			if !tt.omitSubcommand {
+				cmdArgs = append(cmdArgs, "generate")
+			}
+			cmdArgs = append(cmdArgs, tt.extraArgs...)
+
+			code := RunCLI(ctx, cmdArgs, nil, &stdout, &stderr)
 			if code != tt.wantCode {
 				t.Fatalf("expected exit code %d, got %d. stderr: %s", tt.wantCode, code, stderr.String())
 			}
 			if tt.wantCode == 0 {
-				if _, err := os.Stat(outPath); err != nil {
-					t.Fatalf("expected generated manifest at %s", outPath)
+				m, err := manifest.Load(tt.output)
+				if err != nil {
+					t.Fatalf("expected valid manifest at %s: %v", tt.output, err)
+				}
+				if tt.wantLoader && m.SbsLoaderHash == "" {
+					t.Fatalf("expected non-empty SbsLoaderHash in manifest")
+				}
+				if !tt.wantLoader && m.SbsLoaderHash != "" {
+					t.Fatalf("expected empty SbsLoaderHash in manifest")
 				}
 			}
 		})

@@ -1,4 +1,4 @@
-.PHONY: composer-install composer-update composer-lock composer-audit php-lint phpcs phpcs-fix phpstan php-test php-verify php-coverage go-check go-test go-vulncheck go-verify go-coverage go-build docker-lint compose-validate security-trivy secrets-scan verify clean coverage
+.PHONY: composer-install composer-update composer-lock composer-audit composer-outdated php-lint phpcs phpcs-fix phpstan php-test php-verify php-coverage go-check go-test go-vulncheck go-verify go-coverage go-build docker-lint compose-validate security-trivy secrets-scan verify clean coverage
 
 composer-install:
 	composer install --no-interaction --prefer-dist
@@ -11,6 +11,9 @@ composer-lock:
 
 composer-audit:
 	composer audit
+
+composer-outdated:
+	composer outdated -D
 
 php-lint:
 	find . -path ./vendor -prune -o -type f \( -name "*.php" -o -name "*.php.example" \) -print0 | xargs -0 -n1 php -l
@@ -25,12 +28,12 @@ phpstan:
 	phpstan analyse --memory-limit=256M --debug --no-progress
 
 php-test:
-	phpunit --no-coverage
+	./vendor/bin/phpunit --no-coverage
 
 php-verify: php-lint phpcs phpstan php-test
 
 php-coverage:
-	phpunit --coverage-text
+	./vendor/bin/phpunit --coverage-text
 
 go-check:
 	@test -z "$$(gofmt -s -l .)" || (echo "Unformatted files found. Run 'gofmt -s -w .' to fix them." && false)
@@ -79,4 +82,4 @@ verify: docker-lint php-verify go-verify security-trivy secrets-scan
 coverage: php-coverage go-coverage
 
 clean:
-	rm -rf .phpunit.cache .phpcs-cache coverage coverage.xml coverage.html *.out .gocache bin/
+	rm -rf .phpunit.cache .phpcs-cache coverage coverage-html coverage.xml clover.xml coverage.html *.out .gocache bin/

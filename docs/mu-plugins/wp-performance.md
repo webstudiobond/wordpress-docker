@@ -1,7 +1,8 @@
 # WordPress Update & Network Optimization
 
 * **Slug:** `performance`
-* **Source:** `examples/data/wp-content/mu-plugins/wp-performance.php.example`
+* **Source:** `mu-plugins/sbs-platform/wp-performance/` (entrypoint: `wp-performance.php`)
+* **Activation:** `WP_ENABLED_MU_PLUGINS=performance`
 
 ## Overview
 

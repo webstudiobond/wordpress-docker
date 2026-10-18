@@ -1,7 +1,8 @@
 # Conditional Snippets, Preloads & Asset Control
 
 * **Slug:** `snippets`
-* **Source:** `examples/data/wp-content/mu-plugins/wp-snippets.php.example`
+* **Source:** `mu-plugins/sbs-platform/wp-snippets/` (entrypoint: `wp-snippets.php`)
+* **Activation:** `WP_ENABLED_MU_PLUGINS=snippets`
 
 ## Overview
 

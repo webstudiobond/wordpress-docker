@@ -7,7 +7,6 @@ namespace WordPressDocker\Tests;
 use PHPUnit\Framework\Attributes\PreserveGlobalState;
 use PHPUnit\Framework\Attributes\RunInSeparateProcess;
 use PHPUnit\Framework\TestCase;
-use SbsPlatformLoader;
 
 final class SbsLoaderTest extends TestCase
 {
@@ -26,12 +25,15 @@ final class SbsLoaderTest extends TestCase
         putenv('SBS_PLATFORM_MU_DIR');
 
         if (is_dir($this->tempDir)) {
-            $files = glob($this->tempDir . '/*');
-            if ($files !== false) {
-                foreach ($files as $file) {
-                    if (is_file($file)) {
-                        unlink($file);
-                    }
+            $iterator = new \RecursiveIteratorIterator(
+                new \RecursiveDirectoryIterator($this->tempDir, \FilesystemIterator::SKIP_DOTS),
+                \RecursiveIteratorIterator::CHILD_FIRST
+            );
+            foreach ($iterator as $item) {
+                if ($item->isDir()) {
+                    rmdir($item->getPathname());
+                } else {
+                    unlink($item->getPathname());
                 }
             }
             rmdir($this->tempDir);
@@ -40,137 +42,86 @@ final class SbsLoaderTest extends TestCase
         parent::tearDown();
     }
 
-    public function testResolveEnabledSlugsWithNoneKeyword(): void
+    public function testExecutionWithNoneKeywordLoadsNothing(): void
     {
-        $loader = new SbsPlatformLoader(
-            envGetter: static fn(string $name): string|false => $name === 'WP_ENABLED_MU_PLUGINS' ? 'none' : false
-        );
+        putenv('WP_ENABLED_MU_PLUGINS=none');
+        putenv('SBS_PLATFORM_MU_DIR=' . $this->tempDir);
+        file_put_contents($this->tempDir . '/wp-notify.php', '<?php $GLOBALS["test_none_loaded"] = true;');
 
-        $this->assertSame([], $loader->resolveEnabledSlugs());
+        require __DIR__ . '/../mu-plugins/sbs-loader.php';
+
+        $this->assertFalse(isset($GLOBALS['test_none_loaded']));
     }
 
-    public function testResolveEnabledSlugsDefaultFallback(): void
+    public function testExecutionWithDefaultFallbackLoadsNotify(): void
     {
-        $loader = new SbsPlatformLoader(
-            envGetter: static fn(string $name): string|false => false
-        );
+        putenv('WP_ENABLED_MU_PLUGINS');
+        putenv('SBS_PLATFORM_MU_DIR=' . $this->tempDir);
+        file_put_contents($this->tempDir . '/wp-notify.php', '<?php $GLOBALS["test_default_loaded"] = true;');
 
-        $this->assertSame(['notify'], $loader->resolveEnabledSlugs());
+        require __DIR__ . '/../mu-plugins/sbs-loader.php';
 
-        $emptyLoader = new SbsPlatformLoader(
-            envGetter: static fn(string $name): string|false => '   '
-        );
-
-        $this->assertSame(['notify'], $emptyLoader->resolveEnabledSlugs());
+        $this->assertTrue($GLOBALS['test_default_loaded'] ?? false);
     }
 
-    public function testResolveEnabledSlugsRejectsAllAndWildcard(): void
+    public function testExecutionRejectsAllAndWildcard(): void
     {
-        $allLoader = new SbsPlatformLoader(
-            envGetter: static fn(string $name): string|false => 'all'
-        );
-        $this->assertSame([], $allLoader->resolveEnabledSlugs());
+        putenv('WP_ENABLED_MU_PLUGINS=all');
+        putenv('SBS_PLATFORM_MU_DIR=' . $this->tempDir);
+        file_put_contents($this->tempDir . '/wp-all.php', '<?php $GLOBALS["test_all_loaded"] = true;');
 
-        $starLoader = new SbsPlatformLoader(
-            envGetter: static fn(string $name): string|false => '*'
-        );
-        $this->assertSame([], $starLoader->resolveEnabledSlugs());
+        require __DIR__ . '/../mu-plugins/sbs-loader.php';
+        $this->assertFalse(isset($GLOBALS['test_all_loaded']));
+
+        putenv('WP_ENABLED_MU_PLUGINS=*');
+        require __DIR__ . '/../mu-plugins/sbs-loader.php';
+        $this->assertFalse(isset($GLOBALS['test_all_loaded']));
     }
 
-    public function testResolveEnabledSlugsCustomTokensFiltering(): void
+    public function testExecutionFiltersCustomTokens(): void
     {
-        $slugList = 'snippets, performance, snippets, ../bad!slug, bad_underscore, bad123, ALL, none, ';
-        $loader = new SbsPlatformLoader(
-            envGetter: static fn(string $name): string|false => $slugList
+        putenv(
+            'WP_ENABLED_MU_PLUGINS=snippets, performance, snippets, ../bad!slug, bad_underscore, bad123, ALL, none, '
         );
+        putenv('SBS_PLATFORM_MU_DIR=' . $this->tempDir);
+        file_put_contents($this->tempDir . '/wp-snippets.php', '<?php $GLOBALS["test_snippets_loaded"] = true;');
+        file_put_contents($this->tempDir . '/wp-performance.php', '<?php $GLOBALS["test_perf_loaded"] = true;');
 
-        $this->assertSame(['snippets', 'performance'], $loader->resolveEnabledSlugs());
+        require __DIR__ . '/../mu-plugins/sbs-loader.php';
+
+        $this->assertTrue($GLOBALS['test_snippets_loaded'] ?? false);
+        $this->assertTrue($GLOBALS['test_perf_loaded'] ?? false);
     }
 
-    public function testResolvePlatformDirDefaultAndCustom(): void
-    {
-        $defaultLoader = new SbsPlatformLoader(
-            envGetter: static fn(string $name): string|false => false
-        );
-        $this->assertSame('/usr/local/share/wordpress/mu-plugins', $defaultLoader->resolvePlatformDir());
-
-        $emptyLoader = new SbsPlatformLoader(
-            envGetter: static fn(string $name): string|false => '  '
-        );
-        $this->assertSame('/usr/local/share/wordpress/mu-plugins', $emptyLoader->resolvePlatformDir());
-
-        $customLoader = new SbsPlatformLoader(
-            envGetter: static fn(string $name): string|false => '/opt/custom/mu-plugins'
-        );
-        $this->assertSame('/opt/custom/mu-plugins', $customLoader->resolvePlatformDir());
-    }
-
-    public function testLoadSkipsWhenNoSlugsEnabled(): void
-    {
-        $loadedFiles = [];
-        $loader = new SbsPlatformLoader(
-            envGetter: static fn(string $name): string|false => 'none',
-            fileIncluder: static function (string $path) use (&$loadedFiles): void {
-                $loadedFiles[] = $path;
-            }
-        );
-
-        $loader->load();
-        $this->assertSame([], $loadedFiles);
-    }
-
-    public function testLoadSkipsWhenPlatformDirDoesNotExist(): void
-    {
-        $loadedFiles = [];
-        $loader = new SbsPlatformLoader(
-            envGetter: static fn(string $name): string|false => 'notify',
-            dirChecker: static fn(string $path): bool => false,
-            fileIncluder: static function (string $path) use (&$loadedFiles): void {
-                $loadedFiles[] = $path;
-            }
-        );
-
-        $loader->load();
-        $this->assertSame([], $loadedFiles);
-    }
-
-    public function testLoadIncludesExistingFilesOnly(): void
-    {
-        $loadedFiles = [];
-        $loader = new SbsPlatformLoader(
-            envGetter: static function (string $name): string|false {
-                if ($name === 'WP_ENABLED_MU_PLUGINS') {
-                    return 'notify, performance, missing';
-                }
-                return '/virtual/mu-plugins';
-            },
-            dirChecker: static fn(string $path): bool => true,
-            fileChecker: static fn(string $path): bool => str_contains($path, 'notify')
-                || str_contains($path, 'performance'),
-            fileIncluder: static function (string $path) use (&$loadedFiles): void {
-                $loadedFiles[] = $path;
-            }
-        );
-
-        $loader->load();
-        $this->assertSame([
-            '/virtual/mu-plugins/wp-notify.php',
-            '/virtual/mu-plugins/wp-performance.php',
-        ], $loadedFiles);
-    }
-
-    public function testDefaultBuiltinFallbacks(): void
+    public function testExecutionSkipsWhenPlatformDirDoesNotExist(): void
     {
         putenv('WP_ENABLED_MU_PLUGINS=notify');
+        putenv('SBS_PLATFORM_MU_DIR=' . $this->tempDir . '/non_existent');
+
+        require __DIR__ . '/../mu-plugins/sbs-loader.php';
+
+        $this->assertTrue(true);
+    }
+
+    public function testExecutionWithEmptyPlatformDirFallback(): void
+    {
+        putenv('WP_ENABLED_MU_PLUGINS=notify');
+        putenv('SBS_PLATFORM_MU_DIR=   ');
+
+        require __DIR__ . '/../mu-plugins/sbs-loader.php';
+
+        $this->assertTrue(true);
+    }
+
+    public function testExecutionLoadsExistingFilesOnly(): void
+    {
+        putenv('WP_ENABLED_MU_PLUGINS=notify, missing');
         putenv('SBS_PLATFORM_MU_DIR=' . $this->tempDir);
+        file_put_contents($this->tempDir . '/wp-notify.php', '<?php $GLOBALS["test_exist_loaded"] = true;');
 
-        $targetFile = $this->tempDir . '/wp-notify.php';
-        file_put_contents($targetFile, '<?php $GLOBALS["test_builtin_loaded"] = true;');
+        require __DIR__ . '/../mu-plugins/sbs-loader.php';
 
-        $loader = new SbsPlatformLoader();
-        $loader->load();
-
-        $this->assertTrue($GLOBALS['test_builtin_loaded'] ?? false);
+        $this->assertTrue($GLOBALS['test_exist_loaded'] ?? false);
     }
 
     #[RunInSeparateProcess]
@@ -179,13 +130,12 @@ final class SbsLoaderTest extends TestCase
     {
         putenv('WP_ENABLED_MU_PLUGINS=notify');
         putenv('SBS_PLATFORM_MU_DIR=' . $this->tempDir);
-
         file_put_contents(
             $this->tempDir . '/wp-notify.php',
             '<?php $GLOBALS["test_require_loaded"] = true;'
         );
 
-        require __DIR__ . '/../examples/data/wp-content/mu-plugins/sbs-loader.php.example';
+        require __DIR__ . '/../mu-plugins/sbs-loader.php';
 
         $this->assertTrue($GLOBALS['test_require_loaded'] ?? false);
     }

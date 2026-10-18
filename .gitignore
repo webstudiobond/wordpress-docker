@@ -35,6 +35,7 @@ vendor/
 coverage.*
 *.coverprofile
 profile.cov
+clover.xml
 
 go.work
 go.work.sum

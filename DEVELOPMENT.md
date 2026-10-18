@@ -6,22 +6,20 @@ This guide covers local development, code validation, testing standards, build w
 
 ## 1. Prerequisites
 
-Ensure the following tools and dependencies are installed prior to local development and validation:
+Ensure the following runtimes and tools are installed prior to local development and validation:
 
-- **Git**
-- **Docker & Docker Compose** (v2.20+)
-- **Go 1.27+**
-- **PHP 8.5+** (with `mbstring`, `dom`, `xml` extensions)
-- **Composer** (v2.8+)
+### Core Runtimes & Infrastructure
+- **Go 1.27+** (defined in `go.mod`)
+- **PHP 8.5+** (with `mbstring`, `dom`, `xml` extensions; `pcov` for code coverage)
+- **Composer 2+**
+- **Docker & Docker Compose v2**
 - **GNU Make**
-- **golangci-lint** (v1.64+)
-- **govulncheck**
-- **PHPStan** (Level 9)
-- **PHP_CodeSniffer** (v3.10+)
-- **PHPUnit** (v13+)
-- **hadolint**
-- **trivy**
-- **gitleaks**
+- **Git**
+
+### Code Quality & Security Tools
+- **Go:** `golangci-lint`, `govulncheck`
+- **PHP:** `phpstan`, `phpcs`, `phpunit` (managed via `composer install`)
+- **Containers & Security:** `hadolint`, `trivy`, `gitleaks`
 
 ---
 
@@ -46,7 +44,7 @@ Ensure the following tools and dependencies are installed prior to local develop
    golangci-lint --version
    phpstan --version
    phpcs --version
-   phpunit --version
+   ./vendor/bin/phpunit --version
    hadolint --version
    trivy --version
    gitleaks version
@@ -207,46 +205,9 @@ CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags="-s -w" -trimpath -o bin
    docker compose -f docker-compose.dev.yaml --profile tools build wp-cli
    ```
 
-During the multi-stage build:
-- `wp-guard` is compiled inside a dedicated builder stage (`wp-guard-builder`).
-- Platform must-use plugins from `examples/data/wp-content/mu-plugins/` are gathered.
-- The host builder generates `/core-manifest.json` using `wp-guard manifest generate`.
-- The final binary is placed at `/usr/local/bin/wp-guard` in the runtime layer.
-
 ---
 
-## 5. Subsystems & Architecture
-
-### 5.1 `wp-guard` Core Synchronizer & Security CLI
-
-`wp-guard` is a high-performance Go utility that manages core integrity and container initialization:
-
-- **Subcommand `wp-guard sync` (default):**
-  - **Clean Install:** Automatically initializes clean WordPress core from `/usr/src/wordpress` donor directory on first launch.
-  - **Version Mismatch:** Performs atomic directory upgrades or rollbacks of `wp-admin` and `wp-includes` using swap patterns (`.tmp` -> `.bak` -> rename) to avoid downtime and partial writes.
-  - **Integrity Verification:** Uses concurrent worker pools to verify runtime files against SHA-256 hashes in `core-manifest.json`, automatically repairing damaged or modified core files.
-  - **Rogue File Elimination:** Detects and cleans extraneous or untracked files and symlinks inside core directories.
-  - **Platform Loader Enforcement:** Verifies that `sbs-loader.php` exists in the content directory and matches its canonical SHA-256 integrity hash.
-
-- **Subcommand `wp-guard manifest generate`:**
-  - Scans donor WordPress and platform MU-plugins directories.
-  - Computes cryptographic SHA-256 hashes and writes `core-manifest.json`.
-
-- **Subcommand `wp-guard superadmin`:**
-  - Securely reads credentials from standard input and active salt from `/run/secrets/auth_salt`.
-  - Outputs HMAC-SHA512 zero-knowledge hash for storage in Docker Secret `superadmin_hash`.
-
-### 5.2 `sbs-loader.php` Platform MU-Plugin
-
-`sbs-loader.php` dynamically loads immutable platform plugins:
-- Resides in the writable volume (`wp-content/mu-plugins/sbs-loader.php`) with `0640` permissions.
-- Loads plugins from the read-only container layer (`/usr/local/share/wordpress/mu-plugins`).
-- Controlled via `WP_ENABLED_MU_PLUGINS` environment variable (default: `notify`).
-- Enforces strict whitelist validation: only alphanumeric and hyphenated slugs are accepted.
-
----
-
-## 6. Makefile Targets Reference
+## 5. Makefile Targets Reference
 
 | Target | Description |
 | :--- | :--- |
@@ -256,6 +217,10 @@ During the multi-stage build:
 | `make go-vulncheck` | Analyzes Go source code and dependencies for known CVEs using `govulncheck`. |
 | `make go-verify` | Sequentially executes `go-check`, `go-test`, and `go-vulncheck`. |
 | `make go-build` | Compiles the standalone `wp-guard` binary to `bin/wp-guard`. |
+| `make composer-install` | Installs project dependencies via Composer. |
+| `make composer-update` | Updates dependencies to latest allowable versions. |
+| `make composer-outdated` | Checks for newer releases of direct dependencies (`composer.json`). |
+| `make composer-audit` | Audits installed Composer packages for security vulnerabilities. |
 | `make php-lint` | Verifies syntax across all `.php` and `.php.example` files using `php -l`. |
 | `make phpcs` | Analyzes PHP code against strict PSR-12 rules via PHP_CodeSniffer. |
 | `make phpcs-fix` | Automatically formats PHP code in-place using `phpcbf`. |

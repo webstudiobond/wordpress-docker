@@ -100,16 +100,18 @@ Create a system account with a disabled login shell:
 ```bash
 SITE_USER=mysite
 sudo useradd -m -d /home/${SITE_USER} -s /usr/sbin/nologin ${SITE_USER}
+sudo chown root:${SITE_USER} /home/${SITE_USER}
+sudo chmod 0750 /home/${SITE_USER}
 ```
 
 ### 2. Create Directory Structure
 
 ```bash
-sudo -u ${SITE_USER} mkdir -p /home/${SITE_USER}/{.wp-cli,data/wp-content/uploads,mariadb,tmp}
-sudo mkdir -p /home/${SITE_USER}/{mariadb-backup,secrets,config/{angie/conf.d,mysql,php,valkey}}
+sudo mkdir -p /home/${SITE_USER}/{.wp-cli,data/wp-content/uploads,mariadb,mariadb-backup,secrets,tmp,config/{angie/conf.d,mysql,php,valkey}}
+sudo chown -R ${SITE_USER}:${SITE_USER} /home/${SITE_USER}/{.wp-cli,data,mariadb,mariadb-backup,tmp}
+sudo chmod 0700 /home/${SITE_USER}/{.wp-cli,data,mariadb,mariadb-backup,tmp}
 sudo chown -R root:${SITE_USER} /home/${SITE_USER}/{config,secrets}
 sudo chmod -R 0750 /home/${SITE_USER}/{config,secrets}
-sudo chmod 0700 /home/${SITE_USER}/{.wp-cli,data,mariadb,mariadb-backup,tmp}
 ```
 
 ### 3. Generate Secrets
@@ -271,7 +273,7 @@ To provide high-performance, non-blocking delivery without storing plaintext SMT
    Download `sbs-loader.php`, which dynamically and securely loads platform MU-plugins (including `wp-notify.php` by default) from the immutable container layer:
    ```bash
    sudo -u ${SITE_USER} mkdir -p /home/${SITE_USER}/data/wp-content/mu-plugins
-   sudo curl -fsSL ${REPO}/examples/data/wp-content/mu-plugins/sbs-loader.php.example \
+   sudo curl -fsSL ${REPO}/mu-plugins/sbs-loader.php \
      -o /home/${SITE_USER}/data/wp-content/mu-plugins/sbs-loader.php
    sudo chown root:${SITE_USER} /home/${SITE_USER}/data/wp-content/mu-plugins/sbs-loader.php
    sudo chmod 0640 /home/${SITE_USER}/data/wp-content/mu-plugins/sbs-loader.php
@@ -333,7 +335,7 @@ SITE_USER=mysite
 REPO="https://raw.githubusercontent.com/webstudiobond/wordpress-docker/main"
 
 sudo -u ${SITE_USER} mkdir -p /home/${SITE_USER}/data/wp-content/mu-plugins
-sudo curl -fsSL ${REPO}/examples/data/wp-content/mu-plugins/sbs-loader.php.example \
+sudo curl -fsSL ${REPO}/mu-plugins/sbs-loader.php \
   -o /home/${SITE_USER}/data/wp-content/mu-plugins/sbs-loader.php
 sudo chown root:${SITE_USER} /home/${SITE_USER}/data/wp-content/mu-plugins/sbs-loader.php
 sudo chmod 0640 /home/${SITE_USER}/data/wp-content/mu-plugins/sbs-loader.php
@@ -803,11 +805,13 @@ REPO="https://raw.githubusercontent.com/webstudiobond/wordpress-docker/main"
 
 # 1. Create system user and directory structure
 sudo useradd -m -d /home/${SITE_USER} -s /usr/sbin/nologin ${SITE_USER}
-sudo -u ${SITE_USER} mkdir -p /home/${SITE_USER}/{.wp-cli,data/wp-content/{mu-plugins,uploads},mariadb,tmp}
-sudo mkdir -p /home/${SITE_USER}/{mariadb-backup,secrets,config/{angie/conf.d,mysql,php,valkey}}
+sudo chown root:${SITE_USER} /home/${SITE_USER}
+sudo chmod 0750 /home/${SITE_USER}
+sudo mkdir -p /home/${SITE_USER}/{.wp-cli,data/wp-content/{mu-plugins,uploads},mariadb,mariadb-backup,secrets,tmp,config/{angie/conf.d,mysql,php,valkey}}
+sudo chown -R ${SITE_USER}:${SITE_USER} /home/${SITE_USER}/{.wp-cli,data,mariadb,mariadb-backup,tmp}
+sudo chmod 0700 /home/${SITE_USER}/{.wp-cli,data,mariadb,mariadb-backup,tmp}
 sudo chown -R root:${SITE_USER} /home/${SITE_USER}/{config,secrets}
 sudo chmod -R 0750 /home/${SITE_USER}/{config,secrets}
-sudo chmod 0700 /home/${SITE_USER}/{.wp-cli,data,mariadb,mariadb-backup,tmp}
 
 # 2. Generate database credentials and authentication salts
 sudo apt update && sudo apt install -y pwgen openssl zstd
@@ -856,7 +860,7 @@ sudo curl -fsSL ${REPO}/examples/notifier.env.example -o /home/${SITE_USER}/noti
 sudo chmod 0600 /home/${SITE_USER}/{docker-compose.yaml,.env,wordpress.env,notifier.env}
 
 sudo -u ${SITE_USER} curl -fsSL ${REPO}/examples/data/wp-config.php.example -o /home/${SITE_USER}/data/wp-config.php
-sudo curl -fsSL ${REPO}/examples/data/wp-content/mu-plugins/sbs-loader.php.example \
+sudo curl -fsSL ${REPO}/mu-plugins/sbs-loader.php \
   -o /home/${SITE_USER}/data/wp-content/mu-plugins/sbs-loader.php
 sudo chown root:${SITE_USER} /home/${SITE_USER}/data/wp-content/mu-plugins/sbs-loader.php
 sudo chmod 0640 /home/${SITE_USER}/data/wp-content/mu-plugins/sbs-loader.php

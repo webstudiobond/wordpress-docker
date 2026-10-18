@@ -1,7 +1,8 @@
 # Administrative Hardening, RBAC & Dashboard Sanitization
 
 * **Slug:** `admin-control`
-* **Source:** `examples/data/wp-content/mu-plugins/wp-admin-control.php.example`
+* **Source:** `mu-plugins/sbs-platform/wp-admin-control/` (entrypoint: `wp-admin-control.php`)
+* **Activation:** `WP_ENABLED_MU_PLUGINS=admin-control`
 
 ## Overview
 
@@ -39,18 +40,49 @@ secrets:
 
 ## Rule Engine Syntax
 
-Format: `target1,target2|modifier1|modifier2; target3|modifier1`
+Rules define targets (menu items, admin pages, or toolbar nodes), enforcement actions (`hide` or `block`), and targeted audiences.
 
-* **Role Audience:** `role:editor,author` (matches users with specified roles), `!role:administrator` (inverts role check).
-* **User ID Audience:** `user:2,5` (matches specific WordPress user IDs), `!user:1` (inverts user ID check).
-* **Superadmin Exemption:** `superadmins` (super administrators only), `!superadmins` (all users except super administrators).
-* **Global Default:** `all` (matches all authenticated users).
+### Basic Syntax Formats
+
+* **Pipe Mode (Standard):** `target1,target2|audience1|audience2|action; target3|audience`
+  * Example: `users.php,plugins.php|role:editor,author|block`
+* **Compact Mode:** `target1,target2|action:audience|action:audience`
+  * Example: `upload.php,media-new.php|hide:!editor,4`
+
+### Audience Targeting Directives
+
+* **Role Audience:** `role:editor,author` or compact `editor,author` (matches users with specified roles).
+  * *No Implicit Role Hierarchy:* In WordPress, roles are flat capability bundles. A restriction applied to `editor` does not implicitly cascade down to `author`, `contributor`, or custom roles. When multiple roles must be restricted, they must be listed explicitly (e.g. `block:editor,author,contributor`).
+  * *Inversion:* `!role:editor` (or compact `!editor`) matches all authenticated users who do *not* have the `editor` role.
+* **User ID Audience:** `user:2,5` or compact `2,5` (matches specific WordPress user IDs).
+  * *Direct User Precedence:* Explicit user inclusions or exclusions always take precedence over group role rules.
+* **Superadmin Targeting & Exemption:**
+  * `superadmins`: Targets only break-glass Super Administrators.
+  * `!superadmins`: Matches all authenticated users except Super Administrators.
+  * *Hardware Block Exemption:* Super Administrators always safely bypass `block` rules (server-side route restrictions). In cosmetic `hide` rules, Super Administrators are exempt when `!superadmins` is specified.
+* **Global Scope:** `all` matches all authenticated users.
+
+### Negation Semantics, Grouping & Precedence
+
+1. **Exempting a Specific User from a Targeted Role Group:**
+   * Example: `tools.php|role:editor|!user:5` (or compact `tools.php|hide:editor,!5`)
+   * *Meaning:* Targets users with the `editor` role, but explicitly exempts user ID `5` even if they have the `editor` role. Direct individual user exclusions (`invertedUsers`) always override positive group role matches.
+2. **Targeting an Individual User While Inverting a Role Group:**
+   * Example: `upload.php,media-new.php|hide:!editor,4` (equivalent to `hide:4,!editor`)
+   * *Meaning:* Hides upload screens for everyone who is *not* an editor, **and also** for user ID `4` even if user `4` has the `editor` role. Direct individual user inclusions override role-level inversions.
+3. **Group Prefixes vs. Individual Item Negations (Compact Mode):**
+   * **Explicit Group Prefix (`!role:`, `!user:`):** The negation propagates across all comma-separated items in that group:
+     * `upload.php|block:!role:author,editor` $\rightarrow$ both `author` and `editor` are excluded (blocks everyone except authors and editors).
+     * `options-connectors.php|hide:!user:2,3` $\rightarrow$ both user 2 and user 3 are excluded (hides for everyone except users 2 and 3).
+   * **Individual Item Negation (Shorthand):** When bare tokens are listed, the leading `!` binds strictly to the individual item immediately following it:
+     * `upload.php|block:!author,editor` (equivalent to `block:editor,!author`) $\rightarrow$ blocks users with the `editor` role, as well as anyone who is *not* an `author`. The `!` applies only to `author`, leaving `editor` as a positive target.
+     * `options-connectors.php|hide:!2,!3` $\rightarrow$ shorthand for hiding for everyone except users 2 and 3 (equivalent to `hide:!user:2,3`).
 
 ## Sidebar Menu & Route Control
 
 * `WP_ADMIN_SIDEBAR_MENU_CONTROL=`
   Controls sidebar menu item visibility (`hide`) and server-side route access (`block`). Submenu targets use `parent:child`.
-  Example: `WP_ADMIN_SIDEBAR_MENU_CONTROL='plugins.php,themes.php|block:!administrator; tools.php:import|hide:administrator; edit.php?post_type=page|block:!3'`
+  *Note:* For large rule lists or clean modularity, rules can be split across arbitrary topical variables matching the prefix `WP_ADMIN_SIDEBAR_MENU_CONTROL_*` (e.g. `WP_ADMIN_SIDEBAR_MENU_CONTROL_SECURITY`, `WP_ADMIN_SIDEBAR_MENU_CONTROL_SEO`, `WP_ADMIN_SIDEBAR_MENU_CONTROL_ACF`, `WP_ADMIN_SIDEBAR_MENU_CONTROL_1`, etc.). There is no limit on the number of variables; all matching variables are automatically discovered, combined, and evaluated.
 
 ### Discovering Menu and Submenu Slugs
 
@@ -140,6 +172,10 @@ docker compose -f /home/${SITE_USER}/docker-compose.yaml run --rm --no-deps wp-c
   Suppresses non-inline admin notices, banners, and WordPress pointers (`wp-pointer`).
   Example: `WP_ADMIN_HIDE_NOTICES='!superadmins'`
 
+* `WP_ADMIN_STEALTH_DIE=`
+  Replaces the standard WordPress `wp_die()` error screen with a hardened, information-leak-free dark error page for matching users (disabled by default when empty).
+  Example: `WP_ADMIN_STEALTH_DIE='all'` or `WP_ADMIN_STEALTH_DIE='!superadmins'`
+
 * `WP_ADMIN_GUTENBERG_BLOCKS_REMOVE=`
   Restricts registered Gutenberg block types via `allowed_block_types_all`. Supports category targets (`category:theme`, `category:widgets`, `category:embed`), human-readable UI aliases (`loginout`, `query-loop`, `site-logo`, `time-to-read`, `template-part`), namespace wildcards (`woocommerce/*`, `plugin-namespace/*`), and explicit block slugs (`core/archives`, `core/calendar`).
   Example: `WP_ADMIN_GUTENBERG_BLOCKS_REMOVE='category:theme,archives,calendar,latest-comments,rss|!superadmins'`
@@ -161,10 +197,10 @@ docker compose -f /home/${SITE_USER}/docker-compose.yaml run --rm --no-deps wp-c
 
 * `WP_ADMIN_PROFILE_FIELDS_REMOVE=`
   Removes personal options, contact methods, name fields, and third-party plugin profile blocks on `profile.php`.
-  Core targets: `syntax_highlighting`, `color_scheme`, `shortcuts`, `toolbar`, `user_login` (or `username`), `first_name`, `last_name`, `nickname`, `display_name`, `url` (or `website`), `description` (or `bio`), `profile_picture` (or `avatar`), `language`, `sessions`, `application_passwords`.
-  Composite section targets: `about_yourself` (or `about`) removes both biographical info and profile picture and eliminates the section heading. When `description` is removed, the section heading is also automatically hidden if avatars are disabled or removed.
+  Core targets: `rich_editing`, `syntax_highlighting`, `admin_color`, `comment_shortcuts`, `admin_bar_front`, `locale`, `user_login`, `first_name`, `last_name`, `nickname`, `display_name`, `email`, `url`, `description`, `profile_picture`, `sessions`, `application_passwords`.
+  Composite section targets: `about_yourself` removes both biographical info and profile picture and eliminates the section heading. When `description` is removed, the section heading is also automatically hidden if avatars are disabled or removed.
   Custom & plugin targets: arbitrary row wrappers (e.g. `user-xxx-wrap`), input names/IDs, or container IDs can also be specified directly.
-  Example: `WP_ADMIN_PROFILE_FIELDS_REMOVE='syntax_highlighting,color_scheme,toolbar|!superadmins; user_login,url,description,profile_picture'`
+  Example: `WP_ADMIN_PROFILE_FIELDS_REMOVE='syntax_highlighting,admin_color,admin_bar_front,email,user_login,nickname|!superadmins; user_login,url,description,profile_picture'`
 
 ### Discovering User Profile Fields & Contact Methods
 
@@ -175,21 +211,30 @@ copy((function() {
   const result = [];
   let section = 'General';
   const profileForm = document.querySelector('#your-profile') || document.querySelector('form[action*="profile.php"]') || document.body;
-  profileForm.querySelectorAll('h2, h3, table.form-table tr, .application-passwords').forEach(el => {
+  profileForm.querySelectorAll('h2, h3, table.form-table tr, .application-passwords, .yoast-settings input, .yoast-settings select, .yoast-settings textarea, #ai-generator-consent').forEach(el => {
     if (window.getComputedStyle(el).display === 'none') return;
     if (/^H[23]$/i.test(el.tagName)) {
       section = el.textContent.trim();
     } else if (el.tagName === 'TR') {
       const label = el.querySelector('th label')?.textContent.trim() || el.querySelector('th')?.textContent.trim() || '';
-      const input = el.querySelector('input, select, textarea');
+      const input = el.querySelector('input:not([type="hidden"]), select, textarea') || el.querySelector('input, select, textarea');
       const name = input?.getAttribute('name') || input?.id || '';
-      const wrapMatch = el.className.match(/user-([a-z0-9_-]+)-wrap/);
-      const field = wrapMatch ? wrapMatch[1] : (name || el.id || '');
+      const wrapMatch = el.className.match(/user-([a-z0-9_-]+?)(?:-wrap)?(?:\s|$)/);
+      const field = name || (wrapMatch ? wrapMatch[1].replace(/-/g, '_') : '') || el.id || '';
       if (label || field) {
         result.push({ section: section, label: label.replace(/\s+/g, ' '), field: field });
       }
     } else if (el.classList.contains('application-passwords')) {
       result.push({ section: section, label: 'Application Passwords', field: 'application_passwords' });
+    } else if (el.id === 'ai-generator-consent') {
+      const label = profileForm.querySelector('label[for="ai-generator-consent-button"]')?.textContent.trim() || 'AI features';
+      result.push({ section: section, label: label.replace(/\s+/g, ' '), field: 'ai-generator-consent' });
+    } else if (/^(INPUT|SELECT|TEXTAREA)$/i.test(el.tagName) && !el.closest('tr')) {
+      const field = el.getAttribute('name') || el.id || '';
+      const label = (el.id ? profileForm.querySelector(`label[for="${el.id}"]`)?.textContent.trim() : '') || '';
+      if (field) {
+        result.push({ section: section, label: label.replace(/\s+/g, ' '), field: field });
+      }
     }
   });
   return JSON.stringify(result, null, 2);

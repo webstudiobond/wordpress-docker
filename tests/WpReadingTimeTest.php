@@ -8,7 +8,7 @@ use PHPUnit\Framework\Attributes\Depends;
 use PHPUnit\Framework\Attributes\PreserveGlobalState;
 use PHPUnit\Framework\Attributes\RunInSeparateProcess;
 use PHPUnit\Framework\TestCase;
-use WpReadingTime;
+use WordPressDocker\ReadingTime\WpReadingTime;
 
 final class WpReadingTimeTest extends TestCase
 {
@@ -261,7 +261,7 @@ final class WpReadingTimeTest extends TestCase
             define('ABSPATH', '/var/www/html/');
         }
 
-        require __DIR__ . '/../examples/data/wp-content/mu-plugins/wp-reading-time.php.example';
+        require __DIR__ . '/../mu-plugins/sbs-platform/wp-reading-time.php';
 
         $this->assertArrayHasKey('reading_time', $GLOBALS['test_registered_shortcodes']);
     }

@@ -4,19 +4,7 @@
 
     <file>tests</file>
     <file>examples/data/wp-config.php.example</file>
-    <file>examples/data/wp-content/mu-plugins/wp-notify.php.example</file>
-    <file>examples/data/wp-content/mu-plugins/wp-performance.php.example</file>
-    <file>examples/data/wp-content/mu-plugins/wp-translation-updates-disabler.php.example</file>
-    <file>examples/data/wp-content/mu-plugins/wp-acf-editor-control.php.example</file>
-    <file>examples/data/wp-content/mu-plugins/wp-telemetry-blocker.php.example</file>
-    <file>examples/data/wp-content/mu-plugins/wp-post-duplicator.php.example</file>
-    <file>examples/data/wp-content/mu-plugins/wp-core-cleanup.php.example</file>
-    <file>examples/data/wp-content/mu-plugins/wp-transliterator.php.example</file>
-    <file>examples/data/wp-content/mu-plugins/wp-youtube.php.example</file>
-    <file>examples/data/wp-content/mu-plugins/wp-reading-time.php.example</file>
-    <file>examples/data/wp-content/mu-plugins/wp-snippets.php.example</file>
-    <file>examples/data/wp-content/mu-plugins/wp-admin-control.php.example</file>
-    <file>examples/data/wp-content/mu-plugins/sbs-loader.php.example</file>
+    <file>mu-plugins</file>
 
     <arg name="colors"/>
     <arg value="sp"/>

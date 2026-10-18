@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace WordPressDocker\Tests;
 
 use PHPUnit\Framework\TestCase;
-use WpNotifyMailer;
+use WordPressDocker\Notify\WpNotifyMailer;
 
 final class WpNotifyTest extends TestCase
 {
@@ -508,6 +508,21 @@ final class WpNotifyTest extends TestCase
         $attachments = $capturedPayload['attachments'];
         $this->assertCount(1, $attachments);
         $this->assertSame('application/octet-stream', $attachments[0]['mime_type']);
+    }
+
+    public function testDefaultCurlTransportFailure(): void
+    {
+        $socketFile = $this->testTmpDir . '/notify.sock';
+        touch($socketFile);
+
+        $mailer = new WpNotifyMailer(socketPath: $socketFile);
+        $result = $mailer->send(
+            to: 'admin@example.com',
+            subject: 'Default curl',
+            message: 'Body'
+        );
+
+        $this->assertFalse($result);
     }
 
     private function removeDirectory(string $path): void

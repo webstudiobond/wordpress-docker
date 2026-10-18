@@ -1,0 +1,541 @@
+<?php
+
+declare(strict_types=1);
+
+namespace WordPressDocker\AcfEditorControl;
+
+/**
+ * Disables the WordPress Block Editor for post types and specific pages
+ * configured to hide the content editor in Advanced Custom Fields (ACF),
+ * caching resolved targets in wp_options to avoid per-request field group queries.
+ */
+final class WpAcfEditorControl
+{
+    public const string OPTION_POST_TYPES = 'acf_hide_editor_post_types';
+    public const string OPTION_PAGE_IDS = 'acf_hide_editor_page_ids';
+
+    private bool $isUpdatingCache = false;
+    private bool $cacheCheckAttempted = false;
+
+    /**
+     * @param (callable(): array<int, mixed>)|null $fieldGroupsProvider
+     * @param (callable(string, mixed): mixed)|null $optionGetter
+     * @param (callable(string, mixed, bool): bool)|null $optionUpdater
+     * @param (callable(int): array<int|string, mixed>)|null $translationsGetter
+     * @param (callable(int): ?object)|null $postGetter
+     */
+    public function __construct(
+        private readonly mixed $fieldGroupsProvider = null,
+        private readonly mixed $optionGetter = null,
+        private readonly mixed $optionUpdater = null,
+        private readonly mixed $translationsGetter = null,
+        private readonly mixed $postGetter = null
+    ) {
+    }
+
+    public function updateCache(): bool
+    {
+        if ($this->isUpdatingCache) {
+            return false;
+        }
+
+        $this->isUpdatingCache = true;
+
+        try {
+            $fieldGroups = $this->getFieldGroups();
+            if ($fieldGroups === null) {
+                return false;
+            }
+
+            /** @var list<string> $hiddenPostTypes */
+            $hiddenPostTypes = [];
+            /** @var list<int> $hiddenPageIds */
+            $hiddenPageIds = [];
+
+            foreach ($fieldGroups as $group) {
+                if (!\is_array($group) || !$this->isContentHiddenInGroup($group)) {
+                    continue;
+                }
+
+                $locations = $group['location'] ?? null;
+                if (!\is_array($locations)) {
+                    continue;
+                }
+
+                foreach ($locations as $locationGroup) {
+                    if (!\is_array($locationGroup)) {
+                        continue;
+                    }
+
+                    $this->processLocationGroup($locationGroup, $hiddenPostTypes, $hiddenPageIds);
+                }
+            }
+
+            $this->setOption(self::OPTION_POST_TYPES, $hiddenPostTypes, true);
+            $this->setOption(self::OPTION_PAGE_IDS, $hiddenPageIds, true);
+
+            return true;
+        } finally {
+            $this->isUpdatingCache = false;
+        }
+    }
+
+    public function disableForPostType(bool $useBlockEditor, string $postType): bool
+    {
+        $normalizedType = \strtolower(\trim($postType));
+        if (!$useBlockEditor || !$this->isAcfActive() || !$this->isValidPostTypeSlug($normalizedType)) {
+            return $useBlockEditor;
+        }
+
+        $this->ensureCacheInitialized();
+        $disabledTypes = $this->getOptionStringList(self::OPTION_POST_TYPES);
+        if (\in_array($normalizedType, $disabledTypes, true)) {
+            return false;
+        }
+
+        return $useBlockEditor;
+    }
+
+    public function disableForSpecificPost(bool $useBlockEditor, mixed $post): bool
+    {
+        if (!$useBlockEditor || !$this->isAcfActive()) {
+            return $useBlockEditor;
+        }
+
+        $targetPost = null;
+        $postId = 0;
+
+        if (\is_object($post)) {
+            $targetPost = $post;
+        } elseif (\is_int($post) || \is_string($post)) {
+            $numericId = $this->parsePositiveInt($post);
+            if ($numericId > 0) {
+                $postId = $numericId;
+                $targetPost = $this->getPost($numericId);
+            } else {
+                return $useBlockEditor;
+            }
+        } else {
+            return $useBlockEditor;
+        }
+
+        $postType = '';
+        if ($targetPost !== null) {
+            $rawPostType = $targetPost->post_type ?? null;
+            $normalizedType = \is_string($rawPostType) ? \strtolower(\trim($rawPostType)) : '';
+            $postType = $this->isValidPostTypeSlug($normalizedType) ? $normalizedType : '';
+            $targetId = $this->parsePositiveInt($targetPost->ID ?? null);
+            if ($targetId > 0) {
+                $postId = $targetId;
+            }
+
+            if ($postType === 'revision') {
+                $parentId = $this->parsePositiveInt($targetPost->post_parent ?? null);
+                if ($parentId > 0) {
+                    $postId = $parentId;
+                    $parentPost = $this->getPost($parentId);
+                    if ($parentPost !== null) {
+                        $parentRawType = $parentPost->post_type ?? null;
+                        $parentNormalizedType = \is_string($parentRawType) ? \strtolower(\trim($parentRawType)) : '';
+                        $postType = $this->isValidPostTypeSlug($parentNormalizedType)
+                            ? $parentNormalizedType
+                            : '';
+                    }
+                }
+            }
+        }
+
+        if ($postType === '' && $postId <= 0) {
+            return $useBlockEditor;
+        }
+
+        $this->ensureCacheInitialized();
+
+        if ($postType !== '' && !$this->disableForPostType(true, $postType)) {
+            return false;
+        }
+
+        if ($postId <= 0) {
+            return $useBlockEditor;
+        }
+
+        $disabledIds = $this->getOptionIntList(self::OPTION_PAGE_IDS);
+        if (\in_array($postId, $disabledIds, true)) {
+            return false;
+        }
+
+        return $useBlockEditor;
+    }
+
+    /**
+     * @param (callable(string, callable, int, int): void)|null $actionRegistrar
+     * @param (callable(string, callable, int, int): void)|null $filterRegistrar
+     */
+    public function registerHooks(?callable $actionRegistrar = null, ?callable $filterRegistrar = null): void
+    {
+        $actRegistrar = $actionRegistrar;
+        if ($actRegistrar === null && \function_exists('add_action')) {
+            $actRegistrar = static function (
+                string $tag,
+                callable $callback,
+                int $priority = 10,
+                int $acceptedArgs = 1
+            ): void {
+                add_action($tag, $callback, $priority, $acceptedArgs);
+            };
+        }
+
+        $fltRegistrar = $filterRegistrar;
+        if ($fltRegistrar === null && \function_exists('add_filter')) {
+            $fltRegistrar = static function (
+                string $tag,
+                callable $callback,
+                int $priority = 10,
+                int $acceptedArgs = 1
+            ): void {
+                add_filter($tag, $callback, $priority, $acceptedArgs);
+            };
+        }
+
+        if ($actRegistrar !== null) {
+            $actRegistrar('acf/update_field_group', [$this, 'updateCache'], 10, 0);
+            $actRegistrar('acf/trash_field_group', [$this, 'updateCache'], 10, 0);
+            $actRegistrar('acf/untrash_field_group', [$this, 'updateCache'], 10, 0);
+            $actRegistrar('acf/delete_field_group', [$this, 'updateCache'], 10, 0);
+            $actRegistrar('update_option_page_on_front', [$this, 'updateCache'], 10, 0);
+            $actRegistrar('update_option_page_for_posts', [$this, 'updateCache'], 10, 0);
+            $actRegistrar('update_option_show_on_front', [$this, 'updateCache'], 10, 0);
+            $actRegistrar('delete_option_page_on_front', [$this, 'updateCache'], 10, 0);
+            $actRegistrar('delete_option_page_for_posts', [$this, 'updateCache'], 10, 0);
+            $actRegistrar('delete_option_show_on_front', [$this, 'updateCache'], 10, 0);
+            $actRegistrar('pll_save_post', [$this, 'updateCache'], 10, 0);
+            $actRegistrar('after_switch_theme', [$this, 'updateCache'], 10, 0);
+            $actRegistrar('activated_plugin', [$this, 'updateCache'], 10, 0);
+            $actRegistrar('deactivated_plugin', [$this, 'updateCache'], 10, 0);
+        }
+
+        if ($fltRegistrar !== null) {
+            $fltRegistrar('use_block_editor_for_post_type', [$this, 'disableForPostType'], 10, 2);
+            $fltRegistrar('use_block_editor_for_post', [$this, 'disableForSpecificPost'], 10, 2);
+        }
+    }
+
+    /**
+     * @param array<int|string, mixed> $group
+     */
+    private function isContentHiddenInGroup(array $group): bool
+    {
+        if (\array_key_exists('active', $group) && !(bool) $group['active']) {
+            return false;
+        }
+
+        if (
+            isset($group['post_status'])
+            && \is_string($group['post_status'])
+            && \in_array($group['post_status'], ['trash', 'draft'], true)
+        ) {
+            return false;
+        }
+
+        $hideOnScreen = $group['hide_on_screen'] ?? null;
+        if (!\is_array($hideOnScreen)) {
+            return false;
+        }
+
+        return \in_array('the_content', $hideOnScreen, true)
+            || (\array_key_exists('the_content', $hideOnScreen) && (bool) $hideOnScreen['the_content']);
+    }
+
+    /**
+     * @param array<int|string, mixed> $locationGroup
+     * @param list<string> $hiddenPostTypes
+     * @param list<int> $hiddenPageIds
+     */
+    private function processLocationGroup(array $locationGroup, array &$hiddenPostTypes, array &$hiddenPageIds): void
+    {
+        /** @var list<string> $groupPostTypes */
+        $groupPostTypes = [];
+        /** @var list<int> $groupPageIds */
+        $groupPageIds = [];
+
+        foreach ($locationGroup as $rule) {
+            if (!\is_array($rule)) {
+                return;
+            }
+
+            $operator = $rule['operator'] ?? null;
+            $param = $rule['param'] ?? null;
+            $value = $rule['value'] ?? null;
+
+            if ($operator !== '==' || !\is_string($param)) {
+                return;
+            }
+
+            if ($param === 'post_type') {
+                if (\is_string($value)) {
+                    $slug = \strtolower(\trim($value));
+                    if ($this->isValidPostTypeSlug($slug)) {
+                        $groupPostTypes[] = $slug;
+                        continue;
+                    }
+                }
+                return;
+            }
+
+            if ($param === 'page' || $param === 'post') {
+                $pageId = $this->parsePositiveInt($value);
+                if ($pageId > 0) {
+                    $groupPageIds[] = $pageId;
+                    continue;
+                }
+                return;
+            }
+
+            if ($param === 'page_type') {
+                if ($value === 'front_page') {
+                    $frontId = $this->resolveOptionPageId('page_on_front');
+                    if ($frontId > 0) {
+                        $groupPageIds[] = $frontId;
+                        continue;
+                    }
+                    return;
+                }
+                if ($value === 'posts_page') {
+                    $postsId = $this->resolveOptionPageId('page_for_posts');
+                    if ($postsId > 0) {
+                        $groupPageIds[] = $postsId;
+                        continue;
+                    }
+                    return;
+                }
+                return;
+            }
+
+            return;
+        }
+
+        $uniquePageIds = \array_values(\array_unique($groupPageIds));
+        if (\count($uniquePageIds) > 1) {
+            return;
+        }
+
+        $uniquePostTypes = \array_values(\array_unique($groupPostTypes));
+        if (\count($uniquePostTypes) > 1) {
+            return;
+        }
+
+        if ($uniquePageIds !== []) {
+            foreach ($uniquePageIds as $id) {
+                $this->appendPageWithTranslations($hiddenPageIds, $id);
+            }
+            return;
+        }
+
+        if ($uniquePostTypes !== []) {
+            foreach ($uniquePostTypes as $type) {
+                if (!\in_array($type, $hiddenPostTypes, true)) {
+                    $hiddenPostTypes[] = $type;
+                }
+            }
+        }
+    }
+
+    /**
+     * @param list<int> $hiddenPageIds
+     */
+    private function appendPageWithTranslations(array &$hiddenPageIds, int $pageId): void
+    {
+        if (!\in_array($pageId, $hiddenPageIds, true)) {
+            $hiddenPageIds[] = $pageId;
+        }
+
+        foreach ($this->getPostTranslations($pageId) as $translatedId) {
+            if ($translatedId > 0 && !\in_array($translatedId, $hiddenPageIds, true)) {
+                $hiddenPageIds[] = $translatedId;
+            }
+        }
+    }
+
+    /**
+     * @return list<int>
+     */
+    private function getPostTranslations(int $postId): array
+    {
+        $rawTranslations = null;
+
+        if (\is_callable($this->translationsGetter)) {
+            $rawTranslations = ($this->translationsGetter)($postId);
+        } elseif (\function_exists('pll_get_post_translations')) {
+            $rawTranslations = pll_get_post_translations($postId);
+        }
+
+        if (!\is_array($rawTranslations)) {
+            return [];
+        }
+
+        $result = [];
+        foreach ($rawTranslations as $item) {
+            $id = $this->parsePositiveInt($item);
+            if ($id > 0 && !\in_array($id, $result, true)) {
+                $result[] = $id;
+            }
+        }
+
+        return $result;
+    }
+
+    private function isAcfActive(): bool
+    {
+        return \is_callable($this->fieldGroupsProvider) || \function_exists('acf_get_field_groups');
+    }
+
+    /**
+     * @return array<int, mixed>|null
+     */
+    private function getFieldGroups(): ?array
+    {
+        if (\is_callable($this->fieldGroupsProvider)) {
+            return ($this->fieldGroupsProvider)();
+        }
+
+        if (\function_exists('acf_get_field_groups')) {
+            $groups = acf_get_field_groups();
+            return \is_array($groups) ? \array_values($groups) : [];
+        }
+
+        return null;
+    }
+
+    private function resolveOptionPageId(string $optionName): int
+    {
+        $showOnFront = $this->getOption('show_on_front', null);
+        if ($showOnFront === 'posts') {
+            return 0;
+        }
+
+        return $this->parsePositiveInt($this->getOption($optionName, 0));
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function getOptionStringList(string $optionName): array
+    {
+        $raw = $this->getOption($optionName, []);
+        if (!\is_array($raw)) {
+            return [];
+        }
+
+        $list = [];
+        foreach ($raw as $item) {
+            if (\is_string($item)) {
+                $slug = \strtolower(\trim($item));
+                if ($this->isValidPostTypeSlug($slug) && !\in_array($slug, $list, true)) {
+                    $list[] = $slug;
+                }
+            }
+        }
+
+        return $list;
+    }
+
+    /**
+     * @return list<int>
+     */
+    private function getOptionIntList(string $optionName): array
+    {
+        $raw = $this->getOption($optionName, []);
+        if (!\is_array($raw)) {
+            return [];
+        }
+
+        $list = [];
+        foreach ($raw as $item) {
+            $id = $this->parsePositiveInt($item);
+            if ($id > 0 && !\in_array($id, $list, true)) {
+                $list[] = $id;
+            }
+        }
+
+        return $list;
+    }
+
+    private function ensureCacheInitialized(): void
+    {
+        if ($this->cacheCheckAttempted) {
+            return;
+        }
+
+        $this->cacheCheckAttempted = true;
+
+        if (
+            $this->getOption(self::OPTION_POST_TYPES, null) === null
+            || $this->getOption(self::OPTION_PAGE_IDS, null) === null
+        ) {
+            $this->updateCache();
+        }
+    }
+
+    private function parsePositiveInt(mixed $value): int
+    {
+        if (\is_int($value) && $value > 0) {
+            return $value;
+        }
+
+        if (\is_string($value)) {
+            $trimmed = \trim($value);
+            if ($trimmed !== '' && \ctype_digit($trimmed)) {
+                $intVal = (int) $trimmed;
+                return $intVal > 0 ? $intVal : 0;
+            }
+        }
+
+        return 0;
+    }
+
+    private function isValidPostTypeSlug(string $slug): bool
+    {
+        return \preg_match('/^[a-z0-9_-]{1,20}$/', $slug) === 1;
+    }
+
+    private function getPost(int $postId): ?object
+    {
+        if (\is_callable($this->postGetter)) {
+            $post = ($this->postGetter)($postId);
+            return \is_object($post) ? $post : null;
+        }
+
+        if (\function_exists('get_post')) {
+            $post = get_post($postId);
+            return \is_object($post) ? $post : null;
+        }
+
+        return null;
+    }
+
+    private function getOption(string $optionName, mixed $default = false): mixed
+    {
+        if (\is_callable($this->optionGetter)) {
+            return ($this->optionGetter)($optionName, $default);
+        }
+
+        if (\function_exists('get_option')) {
+            return get_option($optionName, $default);
+        }
+
+        return $default;
+    }
+
+    private function setOption(string $optionName, mixed $value, bool $autoload = true): bool
+    {
+        if (\is_callable($this->optionUpdater)) {
+            return (bool) ($this->optionUpdater)($optionName, $value, $autoload);
+        }
+
+        if (\function_exists('update_option')) {
+            return (bool) update_option($optionName, $value, $autoload);
+        }
+
+        return false;
+    }
+}

@@ -10,7 +10,7 @@ use PHPUnit\Framework\Attributes\PreserveGlobalState;
 use PHPUnit\Framework\Attributes\RunInSeparateProcess;
 use PHPUnit\Framework\TestCase;
 use stdClass;
-use WpCoreCleanup;
+use WordPressDocker\CoreCleanup\WpCoreCleanup;
 
 final class WpCoreCleanupTest extends TestCase
 {
@@ -94,6 +94,10 @@ final class WpCoreCleanupTest extends TestCase
     #[DependsExternal(
         WpTranslationUpdatesDisablerTest::class,
         'testRegisterHooksReturnsEarlyWhenAddFilterDoesNotExist'
+    )]
+    #[DependsExternal(
+        WpPostDuplicatorTest::class,
+        'testDefaultConfigurationAndFallbacksWhenWordPressFunctionsUnavailable'
     )]
     public function testGlobalWordPressFunctionFallbacks(): void
     {
@@ -476,7 +480,7 @@ final class WpCoreCleanupTest extends TestCase
         $GLOBALS['test_registered_filters'] = [];
         $GLOBALS['test_removed_actions'] = [];
 
-        require_once __DIR__ . '/../examples/data/wp-content/mu-plugins/wp-core-cleanup.php.example';
+        require_once __DIR__ . '/../mu-plugins/sbs-platform/wp-core-cleanup.php';
 
         $this->assertArrayHasKey('wp_head', $GLOBALS['test_removed_actions']);
         $this->assertArrayHasKey('pre_ping', $GLOBALS['test_registered_actions']);

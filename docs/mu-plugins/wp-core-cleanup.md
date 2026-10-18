@@ -1,7 +1,8 @@
 # Core Head, Header & Comment Cleanup
 
 * **Slug:** `core-cleanup`
-* **Source:** `examples/data/wp-content/mu-plugins/wp-core-cleanup.php.example`
+* **Source:** `mu-plugins/sbs-platform/wp-core-cleanup/` (entrypoint: `wp-core-cleanup.php`)
+* **Activation:** `WP_ENABLED_MU_PLUGINS=core-cleanup`
 
 ## Overview
 

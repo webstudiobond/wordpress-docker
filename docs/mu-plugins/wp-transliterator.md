@@ -1,7 +1,8 @@
 # Slug & Filename Transliterator
 
 * **Slug:** `transliterator`
-* **Source:** `examples/data/wp-content/mu-plugins/wp-transliterator.php.example`
+* **Source:** `mu-plugins/sbs-platform/wp-transliterator/` (entrypoint: `wp-transliterator.php`)
+* **Activation:** `WP_ENABLED_MU_PLUGINS=transliterator`
 
 ## Overview
 

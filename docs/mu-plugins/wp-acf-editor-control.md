@@ -1,7 +1,8 @@
 # ACF & Gutenberg Visibility Sync
 
 * **Slug:** `acf-editor-control`
-* **Source:** `examples/data/wp-content/mu-plugins/wp-acf-editor-control.php.example`
+* **Source:** `mu-plugins/sbs-platform/wp-acf-editor-control/` (entrypoint: `wp-acf-editor-control.php`)
+* **Activation:** `WP_ENABLED_MU_PLUGINS=acf-editor-control`
 
 ## Overview
 

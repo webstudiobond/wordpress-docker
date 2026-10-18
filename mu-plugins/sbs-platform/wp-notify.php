@@ -1,0 +1,328 @@
+<?php
+
+/**
+ * Plugin Name: WP Notify Mailer
+ * Description: Intercepts wp_mail() and dispatches payloads to go-notifier over a local UNIX socket.
+ * Version: 1.1.0
+ * Author: underhax
+ */
+
+declare(strict_types=1);
+
+namespace WordPressDocker\Notify {
+    final class WpNotifyMailer
+    {
+        private const array BLOCKED_ATTACHMENT_PREFIXES = [
+            '/etc/',
+            '/private/etc/',
+            '/run/',
+            '/var/run/',
+            '/private/var/run/',
+            '/proc/',
+            '/sys/',
+            '/dev/',
+            '/root/',
+        ];
+
+        private const array BLOCKED_ATTACHMENT_EXTENSIONS = [
+            'php',
+            'phtml',
+            'phar',
+            'inc',
+            'env',
+            'ini',
+            'conf',
+            'sh',
+            'key',
+            'pem',
+            'crt',
+            'sock',
+            'sql',
+        ];
+
+        /**
+         * @param (callable(string, string): bool)|null $transport
+         * @param (callable(string): (string|false))|null $mimeDetector
+         */
+        public function __construct(
+            private readonly ?string $socketPath = null,
+            private readonly ?int $maxAttachmentSizeMb = null,
+            private readonly mixed $transport = null,
+            private readonly mixed $mimeDetector = null
+        ) {
+        }
+
+        /**
+         * @param string|array<int|string, string> $to
+         * @param string $subject
+         * @param string $message
+         * @param string|array<int|string, string> $headers
+         * @param string|array<int|string, string> $attachments
+         */
+        public function send(
+            string|array $to,
+            string $subject,
+            string $message,
+            string|array $headers = '',
+            string|array $attachments = []
+        ): bool {
+            $recipients = $this->parseRecipients($to);
+            if ($recipients === []) {
+                return false;
+            }
+
+            [$isHtml, $replyTo] = $this->parseHeaders($headers);
+            $bodyText = $isHtml ? '' : $message;
+            $bodyHtml = $isHtml ? $message : '';
+
+            $parsedAttachments = $this->parseAttachments($attachments);
+            $socket = $this->resolveSocketPath();
+
+            if ($socket === '' || \is_link($socket) || !\file_exists($socket)) {
+                \error_log('wp-notify socket missing: ' . $socket);
+                return false;
+            }
+
+            $payload = [
+                'to' => $recipients,
+                'subject' => $subject,
+                'body_text' => $bodyText,
+                'body_html' => $bodyHtml,
+                'reply_to' => $replyTo,
+                'attachments' => $parsedAttachments,
+            ];
+
+            try {
+                $jsonData = \json_encode($payload, JSON_THROW_ON_ERROR);
+            } catch (\JsonException $e) {
+                \error_log('wp-notify json serialization error: ' . $e->getMessage());
+                return false;
+            }
+
+            if (\is_callable($this->transport)) {
+                return (bool) ($this->transport)($socket, $jsonData);
+            }
+
+            return $this->executeCurl($socket, $jsonData);
+        }
+
+        /**
+         * @param string|array<int|string, string> $to
+         * @return list<string>
+         */
+        private function parseRecipients(string|array $to): array
+        {
+            $recipients = [];
+            $rawRecipients = \is_array($to) ? $to : \explode(',', $to);
+            foreach ($rawRecipients as $recipient) {
+                $cleaned = \trim(\str_replace(["\r", "\n", "\0"], '', (string) $recipient));
+                if ($cleaned !== '') {
+                    $recipients[] = $cleaned;
+                }
+            }
+
+            return $recipients;
+        }
+
+        /**
+         * @param string|array<int|string, string> $headers
+         * @return array{bool, string}
+         */
+        private function parseHeaders(string|array $headers): array
+        {
+            $rawHeaders = \is_array($headers)
+                ? $headers
+                : \explode("\n", \str_replace("\r\n", "\n", (string) $headers));
+            $isHtml = false;
+            $replyTo = '';
+
+            foreach ($rawHeaders as $headerLine) {
+                $line = \trim(\str_replace(["\r", "\n", "\0"], '', (string) $headerLine));
+                if ($line === '') {
+                    continue;
+                }
+
+                if (\stripos($line, 'content-type:') === 0 && \stripos($line, 'text/html') !== false) {
+                    $isHtml = true;
+                }
+
+                if (\stripos($line, 'reply-to:') === 0) {
+                    $replyTo = \trim(\substr($line, 9));
+                }
+            }
+
+            return [$isHtml, $replyTo];
+        }
+
+        /**
+         * @param string|array<int|string, string> $attachments
+         * @return list<array{filename: string, mime_type: string, content_base64: string}>
+         */
+        private function parseAttachments(string|array $attachments): array
+        {
+            $maxBytes = $this->resolveMaxBytes();
+            $rawAttachments = \is_array($attachments) ? $attachments : [$attachments];
+            $parsed = [];
+
+            foreach ($rawAttachments as $attPath) {
+                $path = \trim((string) $attPath);
+                if (!$this->isAllowedAttachmentPath($path)) {
+                    continue;
+                }
+
+                $size = \filesize($path);
+                if ($size === false || ($maxBytes > 0 && $size > $maxBytes)) {
+                    continue;
+                }
+
+                $content = \file_get_contents($path);
+                \assert($content !== false);
+
+                $mimeType = $this->detectMimeType($path);
+
+                $parsed[] = [
+                    'filename' => \basename($path),
+                    'mime_type' => $mimeType,
+                    'content_base64' => \base64_encode($content),
+                ];
+            }
+
+            return $parsed;
+        }
+
+        private function isAllowedAttachmentPath(string $path): bool
+        {
+            if (
+                !\str_starts_with($path, '/')
+                || \str_starts_with($path, '//')
+                || \str_contains($path, '..')
+                || \str_contains($path, "\0")
+                || \is_link($path)
+            ) {
+                return false;
+            }
+
+            $realPath = \realpath($path);
+            $resolved = $realPath !== false ? $realPath : $path;
+
+            foreach (self::BLOCKED_ATTACHMENT_PREFIXES as $prefix) {
+                if (\str_starts_with($path, $prefix) || \str_starts_with($resolved, $prefix)) {
+                    return false;
+                }
+            }
+
+            $filename = \basename($resolved);
+            if (\str_starts_with($filename, '.') || \stripos($filename, 'wp-config') !== false) {
+                return false;
+            }
+
+            $ext = \strtolower(\pathinfo($filename, PATHINFO_EXTENSION));
+            if ($ext !== '' && \in_array($ext, self::BLOCKED_ATTACHMENT_EXTENSIONS, true)) {
+                return false;
+            }
+
+            return $realPath !== false && \is_file($realPath) && \is_readable($realPath);
+        }
+
+        private function detectMimeType(string $path): string
+        {
+            if (\is_callable($this->mimeDetector)) {
+                $detected = ($this->mimeDetector)($path);
+            } else {
+                $detected = \function_exists('mime_content_type') ? @mime_content_type($path) : false;
+            }
+
+            if (!\is_string($detected) || $detected === '') {
+                return 'application/octet-stream';
+            }
+
+            return $detected;
+        }
+
+        private function resolveMaxBytes(): int
+        {
+            $maxMb = 10;
+            if ($this->maxAttachmentSizeMb !== null) {
+                $maxMb = $this->maxAttachmentSizeMb;
+            } else {
+                $envMaxMb = \getenv('NOTIFY_MAX_ATTACHMENT_SIZE_MB', true);
+                if ($envMaxMb !== false && \is_numeric($envMaxMb)) {
+                    $maxMb = (int) $envMaxMb;
+                }
+            }
+
+            return $maxMb > 0 ? $maxMb * 1024 * 1024 : 0;
+        }
+
+        private function resolveSocketPath(): string
+        {
+            if ($this->socketPath !== null) {
+                $candidate = \trim($this->socketPath);
+            } else {
+                $envSocket = \getenv('NOTIFY_SOCKET_PATH', true);
+                $candidate = (\is_string($envSocket) && \trim($envSocket) !== '')
+                    ? \trim($envSocket)
+                    : '/var/run/sockets/notify/notify.sock';
+            }
+
+            if (
+                !\str_starts_with($candidate, '/')
+                || \str_starts_with($candidate, '//')
+                || \str_contains($candidate, '..')
+                || \str_contains($candidate, "\0")
+            ) {
+                return '';
+            }
+
+            return $candidate;
+        }
+
+        private function executeCurl(string $socketPath, string $jsonData): bool
+        {
+            \assert($socketPath !== '');
+
+            $ch = \curl_init('http://localhost/notify');
+            \assert($ch instanceof \CurlHandle);
+
+            \curl_setopt_array($ch, [
+                CURLOPT_UNIX_SOCKET_PATH => $socketPath,
+                CURLOPT_POST => true,
+                CURLOPT_POSTFIELDS => $jsonData,
+                CURLOPT_HTTPHEADER => ['Content-Type: application/json'],
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_TIMEOUT => 15,
+                CURLOPT_CONNECTTIMEOUT => 5,
+            ]);
+
+            $result = \curl_exec($ch);
+            $statusCode = \curl_getinfo($ch, CURLINFO_HTTP_CODE);
+
+            return $result !== false && $statusCode === 200;
+        }
+    }
+}
+
+namespace {
+    use WordPressDocker\Notify\WpNotifyMailer;
+
+    if (!\function_exists('wp_mail')) {
+        /**
+         * Intercepts wp_mail and delivers messages via the wp-notify daemon Unix socket.
+         *
+         * @param string|array<int|string, string> $to
+         * @param string $subject
+         * @param string $message
+         * @param string|array<int|string, string> $headers
+         * @param string|array<int|string, string> $attachments
+         */
+        function wp_mail(
+            string|array $to,
+            string $subject,
+            string $message,
+            string|array $headers = '',
+            string|array $attachments = []
+        ): bool {
+            return (new WpNotifyMailer())->send($to, $subject, $message, $headers, $attachments);
+        }
+    }
+}

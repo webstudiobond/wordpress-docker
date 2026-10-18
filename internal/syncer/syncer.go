@@ -620,8 +620,31 @@ func defaultSyncCustomContentDir(ctx context.Context, targetDir, contentDirName 
 	return SyncCustomContentDir(ctx, targetDir, contentDirName)
 }
 
-func defaultVerifySbsLoader(targetDir, contentDirName string) error {
-	return VerifySbsLoader(targetDir, contentDirName)
+func defaultVerifySbsLoader(_ context.Context, cfg *Config, contentDirName string) error {
+	if cfg.ManifestPath == "" {
+		return nil
+	}
+
+	stat, err := os.Lstat(filepath.Clean(cfg.ManifestPath))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("failed stating manifest %s: %w", cfg.ManifestPath, err)
+	}
+	if stat.Mode()&os.ModeSymlink != 0 || stat.IsDir() {
+		return nil
+	}
+
+	m, loadErr := manifest.Load(cfg.ManifestPath)
+	if loadErr != nil {
+		return fmt.Errorf("%w", loadErr)
+	}
+	if m == nil || m.SbsLoaderHash == "" {
+		return nil
+	}
+
+	return VerifySbsLoader(cfg.TargetDir, contentDirName, m.SbsLoaderHash)
 }
 
 func defaultCleanStaleTempDirs(targetDir string) error {
@@ -668,7 +691,7 @@ func handleCleanInstall(ctx context.Context, cfg *Config, donorVersion string) (
 	if err := syncCustomContentDirFn(ctx, cfg.TargetDir, contentDirName); err != nil {
 		return nil, err
 	}
-	if err := verifySbsLoaderFn(cfg.TargetDir, contentDirName); err != nil {
+	if err := verifySbsLoaderFn(ctx, cfg, contentDirName); err != nil {
 		return nil, err
 	}
 
@@ -756,7 +779,7 @@ func checkInstallationState(sourceDir, targetDir string) (donorVersion, targetVe
 
 	indexPath := filepath.Join(targetDir, "index.php")
 	stat, indexStatErr := os.Lstat(indexPath)
-	isNewInstall = (os.IsNotExist(indexStatErr) || (stat != nil && stat.Mode()&os.ModeSymlink != 0)) && targetVersion == ""
+	isNewInstall = (os.IsNotExist(indexStatErr) || errors.Is(indexStatErr, syscall.ENOTDIR) || (stat != nil && stat.Mode()&os.ModeSymlink != 0)) && targetVersion == ""
 
 	return donorVersion, targetVersion, isNewInstall, nil
 }
@@ -792,7 +815,7 @@ func Run(ctx context.Context, cfg *Config) (*SyncResult, error) {
 	if syncErr := syncCustomContentDirFn(ctx, cfg.TargetDir, contentDirName); syncErr != nil {
 		return nil, syncErr
 	}
-	if loaderErr := verifySbsLoaderFn(cfg.TargetDir, contentDirName); loaderErr != nil {
+	if loaderErr := verifySbsLoaderFn(ctx, cfg, contentDirName); loaderErr != nil {
 		return nil, loaderErr
 	}
 

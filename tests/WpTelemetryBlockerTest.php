@@ -9,7 +9,7 @@ use PHPUnit\Framework\Attributes\DependsExternal;
 use PHPUnit\Framework\Attributes\PreserveGlobalState;
 use PHPUnit\Framework\Attributes\RunInSeparateProcess;
 use PHPUnit\Framework\TestCase;
-use WpTelemetryBlocker;
+use WordPressDocker\TelemetryBlocker\WpTelemetryBlocker;
 
 final class WpTelemetryBlockerTest extends TestCase
 {
@@ -220,7 +220,7 @@ final class WpTelemetryBlockerTest extends TestCase
     {
         ensure_wordpress_stubs();
         $GLOBALS['test_registered_actions'] = [];
-        require_once __DIR__ . '/../examples/data/wp-content/mu-plugins/wp-telemetry-blocker.php.example';
+        require_once __DIR__ . '/../mu-plugins/sbs-platform/wp-telemetry-blocker.php';
 
         $this->assertArrayHasKey('admin_print_scripts', $GLOBALS['test_registered_actions']);
         $this->assertArrayHasKey('login_head', $GLOBALS['test_registered_actions']);
