@@ -14,3 +14,7 @@ updates:
       interval: "daily"
     commit-message:
       prefix: "docker"
+    cooldown:
+      default-days: 3
+      exclude:
+        - "wordpress"
