@@ -38,10 +38,14 @@ declare(strict_types=1);
         return;
     }
 
-    $platformDir = \getenv('SBS_PLATFORM_MU_DIR', true);
-    $dir = ($platformDir === false || \trim($platformDir) === '')
-        ? '/usr/local/share/wordpress/mu-plugins'
-        : \trim($platformDir);
+    $dir = '/usr/local/share/wordpress/mu-plugins';
+
+    if (\PHP_SAPI === 'cli' && defined('SBS_TEST_SUITE') && \getenv('SBS_TEST_MODE', true) === '1') {
+        $platformDir = \getenv('SBS_PLATFORM_MU_DIR', true);
+        if ($platformDir !== false && \trim($platformDir) !== '') {
+            $dir = \trim($platformDir);
+        }
+    }
 
     if (!\is_dir($dir)) {
         return;

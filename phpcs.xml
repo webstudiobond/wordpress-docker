@@ -5,6 +5,7 @@
     <file>tests</file>
     <file>examples/data/wp-config.php.example</file>
     <file>mu-plugins</file>
+    <file>prepend</file>
 
     <arg name="colors"/>
     <arg value="sp"/>

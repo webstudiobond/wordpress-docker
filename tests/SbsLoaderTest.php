@@ -15,12 +15,14 @@ final class SbsLoaderTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
+        putenv('SBS_TEST_MODE=1');
         $this->tempDir = sys_get_temp_dir() . '/sbs_loader_test_' . bin2hex(random_bytes(6));
         mkdir($this->tempDir, 0755, true);
     }
 
     protected function tearDown(): void
     {
+        putenv('SBS_TEST_MODE');
         putenv('WP_ENABLED_MU_PLUGINS');
         putenv('SBS_PLATFORM_MU_DIR');
 
@@ -138,5 +140,16 @@ final class SbsLoaderTest extends TestCase
         require __DIR__ . '/../mu-plugins/sbs-loader.php';
 
         $this->assertTrue($GLOBALS['test_require_loaded'] ?? false);
+    }
+
+    public function testExecutionIgnoresPlatformDirWhenTestModeDisabled(): void
+    {
+        putenv('SBS_TEST_MODE');
+        putenv('SBS_PLATFORM_MU_DIR=' . $this->tempDir);
+        file_put_contents($this->tempDir . '/wp-notify.php', '<?php $GLOBALS["test_prod_ignored"] = true;');
+
+        require __DIR__ . '/../mu-plugins/sbs-loader.php';
+
+        $this->assertFalse(isset($GLOBALS['test_prod_ignored']));
     }
 }

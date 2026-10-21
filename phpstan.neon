@@ -4,6 +4,7 @@ parameters:
         - examples/data/wp-config.php.example
         - mu-plugins/sbs-loader.php
         - mu-plugins/sbs-platform
+        - prepend/sbs-prepend.php
     scanFiles:
         - stubs/WP_Error.php
 

@@ -11,6 +11,7 @@ RUN go mod download
 COPY cmd/ cmd/
 COPY internal/ internal/
 COPY mu-plugins/ /mu-plugins-src/
+COPY prepend/ /prepend-src/
 COPY --from=wordpress-donor /usr/src/wordpress /usr/src/wordpress
 
 ARG TARGETOS
@@ -18,9 +19,10 @@ ARG TARGETARCH
 
 RUN set -eux; \
     CGO_ENABLED=0 go build -ldflags="-s -w" -trimpath -o /bin/wp-guard-host ./cmd/wp-guard; \
-    mkdir -p /usr/local/share/wordpress/mu-plugins; \
+    mkdir -p /usr/local/share/wordpress/mu-plugins /usr/local/share/wordpress/prepend; \
     cp -a /mu-plugins-src/sbs-platform/. /usr/local/share/wordpress/mu-plugins/; \
     cp /mu-plugins-src/sbs-loader.php /usr/local/share/wordpress/sbs-loader.php; \
+    cp /prepend-src/sbs-prepend.php /usr/local/share/wordpress/prepend/sbs-prepend.php; \
     /bin/wp-guard-host manifest generate; \
     find /usr/local/share/wordpress -type d -exec chmod 0555 {} +; \
     find /usr/local/share/wordpress -type f -exec chmod 0444 {} +; \

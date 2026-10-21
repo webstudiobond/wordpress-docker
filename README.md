@@ -403,6 +403,43 @@ If your workload requires adjusting PHP memory limits (e.g., for heavy WooCommer
 ---
 
 <details>
+<summary><strong>PHP Hardening &amp; WAF Prepend (.user.ini &amp; Wordfence)</strong></summary>
+
+## PHP Hardening & WAF Prepend Architecture
+
+### Intentional Disabling of `.user.ini`
+By default, PHP-FPM checks directory hierarchies for `.user.ini` files to allow per-directory configuration overrides. In modern containerized environments, this behavior introduces unnecessary filesystem `stat` overhead and creates an attack vector: if a compromised plugin permits arbitrary file upload or directory traversal into writable paths (such as `${WP_CONTENT_DIR}/uploads/`), an attacker could place a malicious `.user.ini` file (e.g. attempting to override directives or execute code via `auto_prepend_file`).
+
+To eliminate this vector, `.user.ini` processing is **intentionally disabled** in `config/php/php.ini`:
+```ini
+user_ini.filename = ""
+```
+
+If your workload strictly requires per-directory `.user.ini` support for a custom plugin or legacy setup, you can re-enable it by commenting out this directive in `config/php/php.ini`:
+```ini
+;user_ini.filename = ""
+```
+and restarting the PHP-FPM container:
+```bash
+docker compose restart wordpress
+```
+
+### Wordfence WAF Integration (Zero `.user.ini` Mode)
+Web application firewalls like Wordfence traditionally attempt to install their pre-execution bootstrap script (`wordfence-waf.php`) via `.user.ini`.
+
+To support Wordfence WAF out-of-the-box without exposing the stack to mutable `.user.ini` vulnerabilities, the image includes an immutable pre-execution runtime loader (`/usr/local/share/wordpress/prepend/sbs-prepend.php`) configured directly in `config/php/www.conf`:
+```ini
+php_admin_value[auto_prepend_file] = /usr/local/share/wordpress/prepend/sbs-prepend.php
+```
+
+* **When Wordfence is not installed:** The loader safely and instantly skips execution with zero overhead and zero errors.
+* **When Wordfence is installed:** When you optimize the firewall via the Wordfence admin wizard, Wordfence generates `/var/www/html/wordfence-waf.php`. The immutable prepend loader automatically picks it up on the next request, achieving **100% Optimized** WAF status before WordPress core initializes, with no manual PHP configuration changes required.
+
+</details>
+
+---
+
+<details>
 <summary><strong>Permissions &amp; Ownership</strong></summary>
 
 ## Host Permissions & Privilege Separation

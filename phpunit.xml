@@ -16,6 +16,7 @@
     <source>
         <include>
             <file>mu-plugins/sbs-loader.php</file>
+            <file>prepend/sbs-prepend.php</file>
             <directory>mu-plugins/sbs-platform</directory>
         </include>
     </source>

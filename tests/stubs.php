@@ -2,6 +2,8 @@
 
 declare(strict_types=1);
 
+const SBS_TEST_SUITE = true;
+
 function ensure_wordpress_stubs(): void
 {
     if (!function_exists('fastcgi_finish_request')) {
