@@ -2,7 +2,7 @@ FROM wordpress:cli-2.12.0-php8.5@sha256:52d8832dc8b90022c22fe963e696e4107d86f68b
 
 FROM wordpress:7.1.3-php8.5-fpm-alpine@sha256:a98f10983d9ea107067a36fbf650af47d553d83df0568183cc0ad6fe9b90b3a5 AS wordpress-donor
 
-FROM --platform=$BUILDPLATFORM golang:1.27.2-alpine3.24@sha256:f92b6ef800e499660581efdabdf25d9d817a9d124eaf900924f0504e7e27e12d AS wp-guard-builder
+FROM --platform=$BUILDPLATFORM golang:1.27.3-alpine3.24@sha256:f2c872bcee949b7be9c490efd02b48a8a2fbf947cdf533f1c58525ec9d8170fd AS wp-guard-builder
 
 WORKDIR /src
 
