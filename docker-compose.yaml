@@ -91,7 +91,6 @@ services:
       WP_CONTENT_DIR: ${WP_CONTENT_DIR:-wp-content}
     volumes:
       - ./${DATA_DIR:-data}:/var/www/html:rw
-      - /etc/localtime:/etc/localtime:ro
     logging:
       driver: json-file
       options:
@@ -156,7 +155,6 @@ services:
       - ./config/php/php.ini:/etc/php/${PHP_VERSION:-8.5}/fpm/conf.d/99-custom.ini:ro
       - ./config/php/opcache.ini:/etc/php/${PHP_VERSION:-8.5}/fpm/conf.d/10-opcache.ini:ro
       - ./config/php/www.conf:/etc/php/${PHP_VERSION:-8.5}/fpm/pool.d/www.conf:ro
-      - /etc/localtime:/etc/localtime:ro
     healthcheck:
       test: ["CMD", "/usr/bin/env", "-i", "SCRIPT_NAME=/ping", "SCRIPT_FILENAME=/ping", "REQUEST_METHOD=GET", "cgi-fcgi", "-bind", "-connect", "/var/run/sockets/php/php-fpm.sock"]
       interval: 10s
@@ -235,7 +233,6 @@ services:
       - ./secrets:/etc/wordpress/secrets:ro
       - ./config/php/php.ini:/etc/php/${PHP_VERSION:-8.5}/cli/conf.d/99-custom.ini:ro
       - ./config/php/opcache.ini:/etc/php/${PHP_VERSION:-8.5}/cli/conf.d/10-opcache.ini:ro
-      - /etc/localtime:/etc/localtime:ro
     depends_on:
       mariadb:
         condition: service_healthy
