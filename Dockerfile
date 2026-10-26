@@ -2,7 +2,7 @@ FROM wordpress:cli-2.12.0-php8.5@sha256:52d8832dc8b90022c22fe963e696e4107d86f68b
 
 FROM wordpress:7.1.3-php8.5-fpm-alpine@sha256:a98f10983d9ea107067a36fbf650af47d553d83df0568183cc0ad6fe9b90b3a5 AS wordpress-donor
 
-FROM --platform=$BUILDPLATFORM golang:1.27.3-alpine3.24@sha256:f2c872bcee949b7be9c490efd02b48a8a2fbf947cdf533f1c58525ec9d8170fd AS wp-guard-builder
+FROM --platform=$BUILDPLATFORM golang:1.27.3-alpine3.24@sha256:b8c9b82affbbb82a020bbcf998dad2ba9516944ac7e883524642a481a9505e9c AS wp-guard-builder
 
 WORKDIR /src
 
@@ -32,10 +32,7 @@ RUN set -eux; \
         -o /bin/wp-guard \
         ./cmd/wp-guard
 
-FROM debian:trixie-slim@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f AS base
-
-LABEL maintainer="underhax" \
-      description="Hardened, zero-network WordPress runtime featuring UNIX domain socket IPC, integrated WP-CLI, Redis/Valkey caching, restricted ImageMagick policies, and AVIF/WebP codecs"
+FROM debian:trixie-slim@sha256:62bd423aeee912639ca8ee681c2b762cb3e25137e0a92b20be455898a9f034ad AS base
 
 ENV DEBIAN_FRONTEND=noninteractive \
     LC_ALL=C.UTF-8 \
