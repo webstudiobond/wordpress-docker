@@ -1,6 +1,6 @@
-FROM wordpress:cli-2.12.0-php8.5@sha256:52d8832dc8b90022c22fe963e696e4107d86f68b9b891e9624d82fec94fdc3b7 AS wpcli-donor
+FROM wordpress:cli-2.12.0-php8.5@sha256:8175cf3199f08662ccace7a5c7b95cf3af165ac46c10039a9af58c7854084aff AS wpcli-donor
 
-FROM wordpress:7.1.3-php8.5-fpm-alpine@sha256:a98f10983d9ea107067a36fbf650af47d553d83df0568183cc0ad6fe9b90b3a5 AS wordpress-donor
+FROM wordpress:7.1.4-php8.5-fpm-alpine@sha256:01d0c87e89038d87e43aac55dc1209f5b3a0f8116d3d9c9dcc2b45291b93daf7 AS wordpress-donor
 
 FROM --platform=$BUILDPLATFORM golang:1.27.3-alpine3.24@sha256:b8c9b82affbbb82a020bbcf998dad2ba9516944ac7e883524642a481a9505e9c AS wp-guard-builder
 
