@@ -1,8 +1,8 @@
-FROM wordpress:cli-2.12.0-php8.5@sha256:8175cf3199f08662ccace7a5c7b95cf3af165ac46c10039a9af58c7854084aff AS wpcli-donor
+FROM wordpress:cli-2.12.0-php8.5@sha256:d16fa67b450f61a8e16d738e502f29dd30daa08c5e7d2bc39a1e32ec29815aed AS wpcli-donor
 
-FROM wordpress:7.1.4-php8.5-fpm-alpine@sha256:01d0c87e89038d87e43aac55dc1209f5b3a0f8116d3d9c9dcc2b45291b93daf7 AS wordpress-donor
+FROM wordpress:7.1.4-php8.5-fpm-alpine@sha256:b7c701c23c9f3e45b0e15c6e318c80933bcc6d0d79f08c4d5b10631be814d9f2 AS wordpress-donor
 
-FROM --platform=$BUILDPLATFORM golang:1.27.3-alpine3.24@sha256:fa3d596898d9f126af7c01d14ee7597bab3f39cccf392ef36b69fe77cd681f18 AS wp-guard-builder
+FROM --platform=$BUILDPLATFORM golang:1.27.4-alpine3.24@sha256:0a5f7fe796599ff487605987432e7619ae45beeb2fba4c2ce0b907879932aebf AS wp-guard-builder
 
 WORKDIR /src
 
