@@ -98,8 +98,18 @@ docker network create --subnet=172.20.0.0/16 frontend_gateway
 Create a system account with a disabled login shell:
 
 ```bash
+APP_UID=<CHOSEN_UID>
+
+getent passwd ${APP_UID}
+getent group ${APP_UID}
+```
+
+> **Important:** Both commands must return empty output. Each containerized service must have its own dedicated unprivileged user and group to enforce strict host DAC privilege separation between different stacks.
+
+```bash
 SITE_USER=mysite
-sudo useradd -m -d /home/${SITE_USER} -s /usr/sbin/nologin ${SITE_USER}
+sudo useradd -M -d /home/${SITE_USER} -s /usr/sbin/nologin -u ${APP_UID} -U ${SITE_USER}
+sudo mkdir -p /home/${SITE_USER}
 sudo chown root:${SITE_USER} /home/${SITE_USER}
 sudo chmod 0750 /home/${SITE_USER}
 ```
@@ -107,15 +117,16 @@ sudo chmod 0750 /home/${SITE_USER}
 ### 2. Create Directory Structure
 
 ```bash
-SITE_USER=mysite
 DATA_DIR=data
 WP_CONTENT_DIR=wp-content
 
 sudo mkdir -p /home/${SITE_USER}/{.wp-cli,${DATA_DIR}/${WP_CONTENT_DIR}/uploads,mariadb,mariadb-backup,secrets,tmp,config/{angie/conf.d,mysql,php,valkey}}
-sudo chown -R ${SITE_USER}:${SITE_USER} /home/${SITE_USER}/{.wp-cli,${DATA_DIR},mariadb,mariadb-backup,tmp}
-sudo chmod 0700 /home/${SITE_USER}/{.wp-cli,${DATA_DIR},mariadb,mariadb-backup,tmp}
+sudo chown -R root:root /home/${SITE_USER}/mariadb-backup
+sudo chmod 0700 /home/${SITE_USER}/mariadb-backup
+sudo chown -R ${SITE_USER}:${SITE_USER} /home/${SITE_USER}/{.wp-cli,${DATA_DIR},mariadb,tmp}
+sudo find /home/${SITE_USER}/{.wp-cli,${DATA_DIR},mariadb,tmp} -type d -exec chmod 0700 {} +
 sudo chown -R root:${SITE_USER} /home/${SITE_USER}/{config,secrets}
-sudo chmod -R 0750 /home/${SITE_USER}/{config,secrets}
+sudo find /home/${SITE_USER}/{config,secrets} -type d -exec chmod 0750 {} +
 ```
 
 ### 3. Generate Secrets
@@ -448,15 +459,14 @@ The stack enforces strict host-level privilege separation across three ownership
 
 * **`root:root` (Host-Only Manifests & Backups):**
   * `docker-compose.yaml`, `.env`, `wordpress.env`, `notifier.env` — `0600`
-  * `mariadb-backup/` — `0700`
+  * `mariadb-backup/` — directory `0700`, files `0600`
 * **`root:${SITE_USER}` (Read-Only Service Configs, Secrets, Platform Loader & Snippets):**
   * `config/` — directories `0750`, files `0640` (mounted `:ro` into containers)
   * `secrets/` — directory `0750`, secret files `0440` (containers have group read-only access and cannot `chmod` or overwrite files)
-  * `snippets/` *(optional)* — directory `0750`, snippet files `0640` (mounted `:ro,noexec,nosuid,nodev` at `/etc/wordpress/snippets`)
+  * `snippets/` *(optional)* — directories `0750`, snippet files `0640` (mounted `:ro,noexec,nosuid,nodev` at `/etc/wordpress/snippets`)
   * `${DATA_DIR}/${WP_CONTENT_DIR}/mu-plugins/sbs-loader.php` — `0440` (mounted `:ro` into containers)
 * **`${SITE_USER}:${SITE_USER}` (Runtime Writable Storage):**
-  * `.wp-cli/`, `mariadb/`, `tmp/` — `0700`
-  * `${DATA_DIR}/` — top-level directory `0700`, `wp-admin/` and `wp-includes/` `0700`, content directories (`${WP_CONTENT_DIR}/`) `0750`, internal files `0640`
+  * `.wp-cli/`, `mariadb/`, `tmp/`, `${DATA_DIR}/` — directories `0700` (recursively), files `0600` (except `sbs-loader.php`, which remains `root:${SITE_USER}` `0440`)
 
 ### One-Shot Permission Reset (Running Stack)
 
@@ -470,30 +480,24 @@ WP_CONTENT_DIR=wp-content
 sudo chown root:${SITE_USER} /home/${SITE_USER}/
 sudo chmod 0750 /home/${SITE_USER}
 
-# 1. Host-only manifests & backups (root:root)
 sudo chown root:root /home/${SITE_USER}/docker-compose.yaml /home/${SITE_USER}/.env /home/${SITE_USER}/wordpress.env
 sudo chmod 0600 /home/${SITE_USER}/docker-compose.yaml /home/${SITE_USER}/.env /home/${SITE_USER}/wordpress.env
 [ -f /home/${SITE_USER}/notifier.env ] && sudo chown root:root /home/${SITE_USER}/notifier.env && sudo chmod 0600 /home/${SITE_USER}/notifier.env
 sudo chown -R root:root /home/${SITE_USER}/mariadb-backup
-sudo chmod 0700 /home/${SITE_USER}/mariadb-backup
+sudo find /home/${SITE_USER}/mariadb-backup -type d -exec chmod 0700 {} +
+sudo find /home/${SITE_USER}/mariadb-backup -type f -exec chmod 0600 {} +
 
-# 2. Read-only service configs, secrets & optional snippets (root:${SITE_USER})
 sudo chown -R root:${SITE_USER} /home/${SITE_USER}/{config,secrets}
 sudo find /home/${SITE_USER}/config -type d -exec chmod 0750 {} +
 sudo find /home/${SITE_USER}/config -type f -exec chmod 0640 {} +
 sudo chmod 0750 /home/${SITE_USER}/secrets
-sudo chmod 0440 /home/${SITE_USER}/secrets/*.txt
-[ -d /home/${SITE_USER}/snippets ] && sudo chown -R root:${SITE_USER} /home/${SITE_USER}/snippets && sudo chmod 0750 /home/${SITE_USER}/snippets && sudo find /home/${SITE_USER}/snippets -type f -exec chmod 0640 {} +
+sudo find /home/${SITE_USER}/secrets -type f -exec chmod 0440 {} +
+[ -d /home/${SITE_USER}/snippets ] && sudo chown -R root:${SITE_USER} /home/${SITE_USER}/snippets && sudo find /home/${SITE_USER}/snippets -type d -exec chmod 0750 {} + && sudo find /home/${SITE_USER}/snippets -type f -exec chmod 0640 {} +
 
-# 3. Runtime writable directories & WordPress files (${SITE_USER}:${SITE_USER})
 sudo chown -R ${SITE_USER}:${SITE_USER} /home/${SITE_USER}/{.wp-cli,${DATA_DIR},mariadb,tmp}
-sudo chmod 0700 /home/${SITE_USER}/{.wp-cli,${DATA_DIR},mariadb,tmp}
-sudo find /home/${SITE_USER}/${DATA_DIR} -mindepth 1 -type d -exec chmod 0750 {} +
-[ -d /home/${SITE_USER}/${DATA_DIR}/wp-admin ] && sudo chmod 0700 /home/${SITE_USER}/${DATA_DIR}/wp-admin
-[ -d /home/${SITE_USER}/${DATA_DIR}/wp-includes ] && sudo chmod 0700 /home/${SITE_USER}/${DATA_DIR}/wp-includes
-sudo find /home/${SITE_USER}/${DATA_DIR} -type f -exec chmod 0640 {} +
+sudo find /home/${SITE_USER}/{.wp-cli,${DATA_DIR},mariadb,tmp} -type d -exec chmod 0700 {} +
+sudo find /home/${SITE_USER}/{.wp-cli,${DATA_DIR},mariadb,tmp} -type f -exec chmod 0600 {} +
 
-# 4. Read-only platform loader (root:${SITE_USER} 0440)
 [ -f /home/${SITE_USER}/${DATA_DIR}/${WP_CONTENT_DIR}/mu-plugins/sbs-loader.php ] && sudo chown root:${SITE_USER} /home/${SITE_USER}/${DATA_DIR}/${WP_CONTENT_DIR}/mu-plugins/sbs-loader.php && sudo chmod 0440 /home/${SITE_USER}/${DATA_DIR}/${WP_CONTENT_DIR}/mu-plugins/sbs-loader.php
 ```
 
@@ -854,20 +858,31 @@ mariadb-dump -uroot --single-transaction --quick wp_db_name > site.sql
 Provision the host user, directories, secrets, and configuration files in a single pass (see [Deployment & Setup](#deployment--setup) for detailed descriptions of each setting, optional messenger channels, and `go-notifier` alternatives):
 
 ```bash
+APP_UID=<CHOSEN_UID>
+
+getent passwd ${APP_UID}
+getent group ${APP_UID}
+```
+
+> **Important:** Both commands must return empty output. Each containerized service must have its own dedicated unprivileged user and group to enforce strict host DAC privilege separation between different stacks.
+
+```bash
 SITE_USER=mysite
 DATA_DIR=data
 WP_CONTENT_DIR=wp-content
 REPO="https://raw.githubusercontent.com/webstudiobond/wordpress-docker/main"
 
 # 1. Create system user and directory structure
-sudo useradd -m -d /home/${SITE_USER} -s /usr/sbin/nologin ${SITE_USER}
+sudo useradd -M -d /home/${SITE_USER} -s /usr/sbin/nologin -u ${APP_UID} -U ${SITE_USER}
+sudo mkdir -p /home/${SITE_USER}/{.wp-cli,${DATA_DIR}/${WP_CONTENT_DIR}/{mu-plugins,uploads},mariadb,mariadb-backup,secrets,tmp,config/{angie/conf.d,mysql,php,valkey}}
 sudo chown root:${SITE_USER} /home/${SITE_USER}
 sudo chmod 0750 /home/${SITE_USER}
-sudo mkdir -p /home/${SITE_USER}/{.wp-cli,${DATA_DIR}/${WP_CONTENT_DIR}/{mu-plugins,uploads},mariadb,mariadb-backup,secrets,tmp,config/{angie/conf.d,mysql,php,valkey}}
-sudo chown -R ${SITE_USER}:${SITE_USER} /home/${SITE_USER}/{.wp-cli,${DATA_DIR},mariadb,mariadb-backup,tmp}
-sudo chmod 0700 /home/${SITE_USER}/{.wp-cli,${DATA_DIR},mariadb,mariadb-backup,tmp}
+sudo chown -R root:root /home/${SITE_USER}/mariadb-backup
+sudo chmod 0700 /home/${SITE_USER}/mariadb-backup
+sudo chown -R ${SITE_USER}:${SITE_USER} /home/${SITE_USER}/{.wp-cli,${DATA_DIR},mariadb,tmp}
+sudo find /home/${SITE_USER}/{.wp-cli,${DATA_DIR},mariadb,tmp} -type d -exec chmod 0700 {} +
 sudo chown -R root:${SITE_USER} /home/${SITE_USER}/{config,secrets}
-sudo chmod -R 0750 /home/${SITE_USER}/{config,secrets}
+sudo find /home/${SITE_USER}/{config,secrets} -type d -exec chmod 0750 {} +
 
 # 2. Generate database credentials and authentication salts
 sudo apt update && sudo apt install -y pwgen openssl zstd
@@ -940,11 +955,8 @@ sudo -u ${SITE_USER} tar -xzf /home/${SITE_USER}/wordpress-files.tar.gz \
   -C /home/${SITE_USER}/${DATA_DIR} \
   --exclude=wp-config.php
 sudo chown -R ${SITE_USER}:${SITE_USER} /home/${SITE_USER}/${DATA_DIR}
-sudo chmod 0700 /home/${SITE_USER}/${DATA_DIR}
-sudo find /home/${SITE_USER}/${DATA_DIR} -mindepth 1 -type d -exec chmod 0750 {} +
-[ -d /home/${SITE_USER}/${DATA_DIR}/wp-admin ] && sudo chmod 0700 /home/${SITE_USER}/${DATA_DIR}/wp-admin
-[ -d /home/${SITE_USER}/${DATA_DIR}/wp-includes ] && sudo chmod 0700 /home/${SITE_USER}/${DATA_DIR}/wp-includes
-sudo find /home/${SITE_USER}/${DATA_DIR} -type f -exec chmod 0640 {} +
+sudo find /home/${SITE_USER}/${DATA_DIR} -type d -exec chmod 0700 {} +
+sudo find /home/${SITE_USER}/${DATA_DIR} -type f -exec chmod 0600 {} +
 [ -f /home/${SITE_USER}/${DATA_DIR}/${WP_CONTENT_DIR}/mu-plugins/sbs-loader.php ] && sudo chown root:${SITE_USER} /home/${SITE_USER}/${DATA_DIR}/${WP_CONTENT_DIR}/mu-plugins/sbs-loader.php && sudo chmod 0440 /home/${SITE_USER}/${DATA_DIR}/${WP_CONTENT_DIR}/mu-plugins/sbs-loader.php
 ```
 
