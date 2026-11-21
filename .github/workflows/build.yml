@@ -1,4 +1,4 @@
-name: Build and Publish Docker Image
+name: Build and Publish Docker Images
 
 on:
   workflow_dispatch:
@@ -6,6 +6,7 @@ on:
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: webstudiobond/wordpress
+  IMAGE_CLI_NAME: webstudiobond/wp-cli
 
 permissions:
   contents: read
@@ -19,6 +20,7 @@ jobs:
       wp_ver:     ${{ steps.extract.outputs.wp_ver }}
       wpcli_ver:  ${{ steps.extract.outputs.wpcli_ver }}
       image_base: ${{ steps.extract.outputs.image_base }}
+      cli_image_base: ${{ steps.extract.outputs.cli_image_base }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -28,6 +30,7 @@ jobs:
           WP_VER=$(sed -nE 's/^FROM wordpress:([0-9]+(\.[0-9]+)+).* AS wordpress-donor.*/\1/p' Dockerfile)
           WPCLI_VER=$(sed -nE 's/^FROM wordpress:cli-([0-9]+(\.[0-9]+)+).* AS wpcli-donor.*/\1/p' Dockerfile)
           IMAGE_BASE=$(echo "${REGISTRY}/${IMAGE_NAME}" | tr '[:upper:]' '[:lower:]')
+          CLI_IMAGE_BASE=$(echo "${REGISTRY}/${IMAGE_CLI_NAME}" | tr '[:upper:]' '[:lower:]')
 
           [ -n "${WP_VER}" ]    || { echo "ERROR: failed to parse WordPress version"; exit 1; }
           [ -n "${WPCLI_VER}" ] || { echo "ERROR: failed to parse WP-CLI version"; exit 1; }
@@ -35,6 +38,7 @@ jobs:
           echo "wp_ver=${WP_VER}"         >> "$GITHUB_OUTPUT"
           echo "wpcli_ver=${WPCLI_VER}"   >> "$GITHUB_OUTPUT"
           echo "image_base=${IMAGE_BASE}" >> "$GITHUB_OUTPUT"
+          echo "cli_image_base=${CLI_IMAGE_BASE}" >> "$GITHUB_OUTPUT"
 
   build:
     name: Build (${{ matrix.platform }})
@@ -92,7 +96,7 @@ jobs:
           push: true
           platforms: ${{ matrix.platform }}
           tags: |
-            ${{ needs.prepare.outputs.image_base }}:cli-${{ needs.prepare.outputs.wpcli_ver }}${{ matrix.push_tag_suffix }}
+            ${{ needs.prepare.outputs.cli_image_base }}:${{ needs.prepare.outputs.wpcli_ver }}${{ matrix.push_tag_suffix }}
           provenance: false
           labels: |
             org.opencontainers.image.title=WordPress CLI
@@ -130,12 +134,11 @@ jobs:
 
       - name: Create CLI multi-arch manifest
         run: |
-          BASE=${{ needs.prepare.outputs.image_base }}
+          BASE=${{ needs.prepare.outputs.cli_image_base }}
           CLI_VER=${{ needs.prepare.outputs.wpcli_ver }}
 
           docker buildx imagetools create \
-            --tag "${BASE}:cli-${CLI_VER}" \
-            --tag "${BASE}:cli-latest" \
-            --tag "${BASE}:cli" \
-            "${BASE}:cli-${CLI_VER}-amd64" \
-            "${BASE}:cli-${CLI_VER}-arm64"
+            --tag "${BASE}:${CLI_VER}" \
+            --tag "${BASE}:latest" \
+            "${BASE}:${CLI_VER}-amd64" \
+            "${BASE}:${CLI_VER}-arm64"

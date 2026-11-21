@@ -181,7 +181,7 @@ services:
     build:
       context: .
       target: cli
-    image: wordpress:dev-cli
+    image: wp-cli:dev
     container_name: "${SITE_USER}_wp-cli"
     hostname: "${SITE_USER}-wp-cli"
     profiles:

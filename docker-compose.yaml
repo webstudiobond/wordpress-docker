@@ -175,7 +175,7 @@ services:
         max-file: "3"
 
   wp-cli:
-    image: ghcr.io/webstudiobond/wordpress:cli-${WP_CLI_VERSION:-latest}
+    image: ghcr.io/webstudiobond/wp-cli:${WP_CLI_VERSION:-latest}
     container_name: "${SITE_USER}_wp-cli"
     hostname: "${SITE_USER}-wp-cli"
     profiles:
