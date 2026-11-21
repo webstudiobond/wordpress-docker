@@ -199,7 +199,10 @@ sudo -u ${SITE_USER} curl -fsSL ${REPO}/examples/data/wp-config.php.example -o /
 
 ### 6. Configure Environment
 
-Edit `.env` to set the site user and UID/GID matching the system account created in Step 1 (check with `id ${SITE_USER}`):
+```bash
+sed -i "s/^APP_UID=.*/APP_UID=${APP_UID}/" /home/${SITE_USER}/.env
+sed -i "s/^APP_GID=.*/APP_GID=${APP_UID}/" /home/${SITE_USER}/.env
+```
 
 ```bash
 sudo nano /home/${SITE_USER}/.env
