@@ -82,7 +82,7 @@ services:
         max-file: "3"
 
   init:
-    image: wordpress-docker:dev
+    image: wordpress:dev
     container_name: "${SITE_USER}_init"
     restart: "no"
     user: "${APP_UID}:${APP_GID}"
@@ -101,7 +101,7 @@ services:
     build:
       context: .
       target: fpm
-    image: wordpress-docker:dev
+    image: wordpress:dev
     container_name: "${SITE_USER}_wordpress"
     hostname: "${SITE_USER}-wordpress"
     restart: always
@@ -181,7 +181,7 @@ services:
     build:
       context: .
       target: cli
-    image: wordpress-docker:dev-cli
+    image: wordpress:dev-cli
     container_name: "${SITE_USER}_wp-cli"
     hostname: "${SITE_USER}-wp-cli"
     profiles:
@@ -323,7 +323,7 @@ services:
   #       max-file: "3"
 
   angie:
-    image: docker.angie.software/angie:latest
+    image: ghcr.io/webstudiobond/angie:${ANGIE_VERSION:-latest}
     container_name: "${SITE_USER}_angie"
     hostname: "${SITE_USER}-angie"
     restart: always
@@ -338,7 +338,7 @@ services:
     expose:
       - "80"
     healthcheck:
-      test: ["CMD", "curl", "-f", "-s", "-o", "/dev/null", "http://127.0.0.1/healthz"]
+      test: ["CMD", "/usr/local/bin/probe"]
       interval: 30s
       timeout: 5s
       retries: 3

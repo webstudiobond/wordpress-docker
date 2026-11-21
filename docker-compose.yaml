@@ -82,7 +82,7 @@ services:
         max-file: "3"
 
   init:
-    image: ghcr.io/webstudiobond/wordpress-docker:${WP_VERSION:-latest}
+    image: ghcr.io/webstudiobond/wordpress:${WP_VERSION:-latest}
     container_name: "${SITE_USER}_init"
     restart: "no"
     user: "${APP_UID}:${APP_GID}"
@@ -98,7 +98,7 @@ services:
         max-file: "3"
 
   wordpress:
-    image: ghcr.io/webstudiobond/wordpress-docker:${WP_VERSION:-latest}
+    image: ghcr.io/webstudiobond/wordpress:${WP_VERSION:-latest}
     container_name: "${SITE_USER}_wordpress"
     hostname: "${SITE_USER}-wordpress"
     restart: always
@@ -175,7 +175,7 @@ services:
         max-file: "3"
 
   wp-cli:
-    image: ghcr.io/webstudiobond/wordpress-docker:cli-${WP_CLI_VERSION:-latest}
+    image: ghcr.io/webstudiobond/wordpress:cli-${WP_CLI_VERSION:-latest}
     container_name: "${SITE_USER}_wp-cli"
     hostname: "${SITE_USER}-wp-cli"
     profiles:
